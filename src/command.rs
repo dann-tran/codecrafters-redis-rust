@@ -1,7 +1,10 @@
 use anyhow::Context;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-use crate::resp::{serialize, RespValue};
+use crate::{
+    resp::{serialize, RespValue},
+    Db,
+};
 
 pub trait RedisCommand {
     fn respond(&self, socket: &mut TcpStream) -> impl std::future::Future<Output = ()> + Send;
@@ -9,27 +12,34 @@ pub trait RedisCommand {
 
 pub enum Command {
     Ping,
-    Echo(RespValue),
+    Echo(Vec<u8>),
+    Set { key: String, value: String },
+    Get(String),
 }
 
-pub async fn respond(socket: &mut TcpStream, command: &Command) {
-    match command {
+pub async fn respond(socket: &mut TcpStream, db: &Db, command: &Command) {
+    let buf = match command {
         Command::Ping => {
             let simple_string = RespValue::SimpleString(String::from("PONG"));
-            let buf = serialize(&simple_string);
-            socket
-                .write_all(&buf)
-                .await
-                .context("Send PONG response")
-                .unwrap();
+            serialize(&simple_string)
         }
-        Command::Echo(val) => {
-            let buf = serialize(val);
-            socket
-                .write_all(&buf)
-                .await
-                .context("Send ECHO response")
-                .unwrap();
+        Command::Echo(val) => serialize(&RespValue::BulkString(val.clone())),
+        Command::Set { key, value } => {
+            let mut db = db.lock().unwrap();
+            db.insert(key.into(), value.into());
+            serialize(&RespValue::SimpleString("OK".into()))
         }
-    }
+        Command::Get(key) => {
+            let db = db.lock().unwrap();
+            match db.get(key) {
+                Some(value) => serialize(&RespValue::BulkString(value.as_bytes().into())),
+                None => serialize(&RespValue::NullBulkString),
+            }
+        }
+    };
+    socket
+        .write_all(&buf)
+        .await
+        .context("Send PONG response")
+        .unwrap();
 }

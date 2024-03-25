@@ -3,6 +3,7 @@ pub enum RespValue {
     SimpleString(String),
     BulkString(Vec<u8>),
     Array(Vec<RespValue>),
+    NullBulkString,
 }
 
 pub fn serialize(resp: &RespValue) -> Vec<u8> {
@@ -24,6 +25,7 @@ pub fn serialize(resp: &RespValue) -> Vec<u8> {
             values.iter().for_each(|val| bytes.extend(serialize(val)));
             bytes
         }
+        RespValue::NullBulkString => b"$-1\r\n".into(),
     }
 }
 
@@ -85,6 +87,9 @@ pub fn decode(bytes: &[u8]) -> (RespValue, &[u8]) {
         }
     }
 }
+
+// TODO: implement decode command
+// pub fn decode_cmd(bytes: &[u8]) -> Vec<Vec<u8>>
 
 #[cfg(test)]
 mod tests {
