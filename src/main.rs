@@ -9,7 +9,6 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
 async fn handler(mut socket: TcpStream, db: Db) {
-    // let expected_req = b"*1\r\n$4\r\nping\r\n";
     loop {
         let mut buf = [0u8; 1024];
         socket
@@ -34,13 +33,22 @@ async fn handler(mut socket: TcpStream, db: Db) {
             b"set" => {
                 let key = args.next().expect("SET key");
                 let value = args.next().expect("SET value");
-                let px = args
-                    .next()
-                    .map(|s| s.to_ascii_lowercase())
-                    .filter(|s| s == b"px")
-                    .and_then(|_| args.next())
-                    .and_then(|s| String::from_utf8(s.clone()).ok())
-                    .and_then(|s| s.parse::<usize>().ok());
+                let is_px_present = match args.next().map(|s| s.to_ascii_lowercase()) {
+                    Some(c) => match &c[..] {
+                        b"px" => true,
+                        _ => panic!("Invalid SET arguments"),
+                    },
+                    None => false,
+                };
+                let px = match is_px_present {
+                    true => {
+                        let px = args.next().expect("expiry argument");
+                        let px = String::from_utf8(px.clone()).expect("Valid string");
+                        let px = px.parse::<usize>().expect("Valid number");
+                        Some(px)
+                    }
+                    false => None,
+                };
 
                 Command::Set {
                     key: String::from_utf8(key.clone()).expect("Valid UTF-8 key"),
