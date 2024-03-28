@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use redis_starter_rust::command::{respond, Command};
-use redis_starter_rust::resp::{decode, RespValue};
+use redis_starter_rust::resp::decode_array_of_bulkstrings;
 use redis_starter_rust::Db;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -18,72 +18,30 @@ async fn handler(mut socket: TcpStream, db: Db) {
             .context("Read from client")
             .unwrap();
 
-        let (req, _) = decode(&buf);
-        match req {
-            RespValue::Array(vec) => {
-                let mut values = vec.iter();
-                let cmd = match values.next() {
-                    Some(RespValue::BulkString(c)) => {
-                        let c = String::from_utf8(c.clone())
-                            .expect("Invalid command string")
-                            .to_ascii_lowercase();
-                        let c = c.as_str();
-                        match c {
-                            "ping" => Command::Ping,
-                            "echo" => {
-                                let val = match values.next() {
-                                    Some(RespValue::BulkString(v)) => v,
-                                    _ => {
-                                        panic!("Invalid echo argument")
-                                    }
-                                };
-                                Command::Echo(val.clone())
-                            }
-                            "get" => {
-                                let val = match values.next() {
-                                    Some(RespValue::BulkString(v)) => v,
-                                    _ => {
-                                        panic!("Invalid get argument")
-                                    }
-                                };
-                                Command::Get(
-                                    String::from_utf8(val.clone()).expect("Key must be UTF-8"),
-                                )
-                            }
-                            "set" => {
-                                let key = match values.next() {
-                                    Some(RespValue::BulkString(v)) => v,
-                                    _ => {
-                                        panic!("Invalid key")
-                                    }
-                                };
-                                let value = match values.next() {
-                                    Some(RespValue::BulkString(v)) => v,
-                                    _ => {
-                                        panic!("Invalid value")
-                                    }
-                                };
-                                Command::Set {
-                                    key: String::from_utf8(key.clone()).expect("Valid UTF-8 key"),
-                                    value: String::from_utf8(value.clone())
-                                        .expect("Valid UTF-8 value"),
-                                }
-                            }
-                            _ => {
-                                panic!("Unrecognised command")
-                            }
-                        }
-                    }
-                    _ => {
-                        panic!("Invalid")
-                    }
-                };
-                respond(&mut socket, &db, &cmd).await;
+        let args = decode_array_of_bulkstrings(&buf);
+        let mut args = args.iter();
+        let verb = args.next().expect("A command verb must be present");
+        let cmd = match &verb[..] {
+            b"ping" => Command::Ping,
+            b"echo" => {
+                let val = args.next().expect("ECHO argument");
+                Command::Echo(val.clone())
             }
-            _ => {
-                panic!("Invalid request")
+            b"get" => {
+                let val = args.next().expect("GET key");
+                Command::Get(String::from_utf8(val.clone()).expect("Key must be UTF-8"))
             }
-        }
+            b"set" => {
+                let key = args.next().expect("SET key");
+                let value = args.next().expect("SET value");
+                Command::Set {
+                    key: String::from_utf8(key.clone()).expect("Valid UTF-8 key"),
+                    value: String::from_utf8(value.clone()).expect("Valid UTF-8 value"),
+                }
+            }
+            _ => panic!("Unknown verb: {:?}", verb),
+        };
+        respond(&mut socket, &db, &cmd).await;
     }
 }
 

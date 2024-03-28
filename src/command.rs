@@ -6,10 +6,6 @@ use crate::{
     Db,
 };
 
-pub trait RedisCommand {
-    fn respond(&self, socket: &mut TcpStream) -> impl std::future::Future<Output = ()> + Send;
-}
-
 pub enum Command {
     Ping,
     Echo(Vec<u8>),

@@ -71,6 +71,7 @@ pub fn decode(bytes: &[u8]) -> (RespValue, &[u8]) {
             return (RespValue::BulkString(data.into()), bytes);
         }
         b'*' => {
+            // list
             let (vec_length_bytes, bytes) = split_by_clrf(&bytes[1..]);
             let vec_length = bytes2usize(&vec_length_bytes);
             let mut values = Vec::with_capacity(vec_length);
@@ -88,8 +89,21 @@ pub fn decode(bytes: &[u8]) -> (RespValue, &[u8]) {
     }
 }
 
-// TODO: implement decode command
-// pub fn decode_cmd(bytes: &[u8]) -> Vec<Vec<u8>>
+pub fn decode_array_of_bulkstrings(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let (cmd, _) = decode(bytes);
+    let values = match cmd {
+        RespValue::Array(values) => values,
+        o => panic!("Command must be an array, found {:?}", o),
+    };
+    values
+        .iter()
+        .map(|val| match val {
+            RespValue::BulkString(x) => x,
+            o => panic!("Command elements must be bulk strings, found {:?}", o),
+        })
+        .map(|x| x.clone())
+        .collect::<Vec<Vec<u8>>>()
+}
 
 #[cfg(test)]
 mod tests {
