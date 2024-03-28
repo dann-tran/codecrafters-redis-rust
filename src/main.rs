@@ -34,9 +34,18 @@ async fn handler(mut socket: TcpStream, db: Db) {
             b"set" => {
                 let key = args.next().expect("SET key");
                 let value = args.next().expect("SET value");
+                let px = args
+                    .next()
+                    .map(|s| s.to_ascii_lowercase())
+                    .filter(|s| s == b"px")
+                    .and_then(|_| args.next())
+                    .and_then(|s| String::from_utf8(s.clone()).ok())
+                    .and_then(|s| s.parse::<usize>().ok());
+
                 Command::Set {
                     key: String::from_utf8(key.clone()).expect("Valid UTF-8 key"),
                     value: String::from_utf8(value.clone()).expect("Valid UTF-8 value"),
+                    px: px,
                 }
             }
             _ => panic!("Unknown verb: {:?}", verb),

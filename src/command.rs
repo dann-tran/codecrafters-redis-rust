@@ -2,37 +2,56 @@ use anyhow::Context;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use crate::{
+    get_current_ms,
     resp::{serialize, RespValue},
-    Db,
+    Db, DbValue,
 };
 
 pub enum Command {
     Ping,
     Echo(Vec<u8>),
-    Set { key: String, value: String },
+    Set {
+        key: String,
+        value: String,
+        px: Option<usize>,
+    },
     Get(String),
 }
 
 pub async fn respond(socket: &mut TcpStream, db: &Db, command: &Command) {
-    let buf = match command {
-        Command::Ping => {
-            let simple_string = RespValue::SimpleString(String::from("PONG"));
-            serialize(&simple_string)
-        }
-        Command::Echo(val) => serialize(&RespValue::BulkString(val.clone())),
-        Command::Set { key, value } => {
+    let res = match command {
+        Command::Ping => RespValue::SimpleString(String::from("PONG")),
+        Command::Echo(val) => RespValue::BulkString(val.clone()),
+        Command::Set { key, value, px } => {
             let mut db = db.lock().unwrap();
-            db.insert(key.into(), value.into());
-            serialize(&RespValue::SimpleString("OK".into()))
+            db.insert(
+                key.into(),
+                DbValue {
+                    value: value.into(),
+                    expiry: px.map(|v| get_current_ms() + (v as u128)),
+                },
+            );
+            RespValue::SimpleString("OK".into())
         }
         Command::Get(key) => {
-            let db = db.lock().unwrap();
+            let mut db = db.lock().unwrap();
             match db.get(key) {
-                Some(value) => serialize(&RespValue::BulkString(value.as_bytes().into())),
-                None => serialize(&RespValue::NullBulkString),
+                Some(DbValue { value, expiry }) => match expiry {
+                    Some(v) => {
+                        if get_current_ms() > *v {
+                            db.remove(key);
+                            RespValue::NullBulkString
+                        } else {
+                            RespValue::BulkString(value.as_bytes().into())
+                        }
+                    }
+                    None => RespValue::BulkString(value.as_bytes().into()),
+                },
+                None => RespValue::NullBulkString,
             }
         }
     };
+    let buf = serialize(&res);
     socket
         .write_all(&buf)
         .await
