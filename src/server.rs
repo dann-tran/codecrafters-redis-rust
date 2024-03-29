@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    command::{Command, InfoArg},
+    command::{Command, FromBytes},
     utils::get_current_ms,
 };
 use crate::{
@@ -29,7 +29,7 @@ pub enum RedisRole {
 
 pub struct RedisInfo {
     pub role: RedisRole,
-    pub master_replid: [u8; 40],
+    pub master_repl_id: [char; 40],
     pub master_repl_offset: usize,
 }
 
@@ -37,10 +37,11 @@ impl RedisInfo {
     pub fn new(role: RedisRole) -> RedisInfo {
         RedisInfo {
             role,
-            master_replid: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
-                .as_bytes()
+            master_repl_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+                .chars()
+                .collect::<Vec<char>>()
                 .try_into()
-                .expect("Valid 40-character string"),
+                .expect("40 characters"),
             master_repl_offset: 0,
         }
     }
@@ -49,16 +50,6 @@ impl RedisInfo {
 pub struct RedisState {
     pub info: RedisInfo,
     pub db: HashMap<String, DbValue>,
-}
-
-async fn send_array(socket: &mut TcpStream, arr: &Vec<Vec<u8>>) {
-    let buf = RespValue::Array(
-        arr.iter()
-            .map(|x| RespValue::BulkString(x.clone()))
-            .collect(),
-    )
-    .to_bytes();
-    socket.write_all(&buf).await.unwrap();
 }
 
 async fn recv_then_assert(buf: &mut [u8; 1024], socket: &mut TcpStream, expected: &Vec<u8>) {
@@ -141,11 +132,16 @@ impl RedisState {
         .await;
 
         // Send PSYNC
-        send_array(
-            &mut socket,
-            &vec![b"PSYNC".to_vec(), b"?".to_vec(), b"-1".to_vec()],
-        )
-        .await;
+        let send_buf = Command::PSync {
+            repl_id: None,
+            repl_offset: None,
+        }
+        .to_bytes();
+        socket
+            .write_all(&send_buf)
+            .await
+            .context("Send PSYNC")
+            .unwrap();
 
         Self::new(RedisRole::Slave)
     }
@@ -208,7 +204,14 @@ impl RedisServer {
                         RedisRole::Slave => b"slave".to_vec(),
                     },
                 );
-                info_map.insert(b"master_replid".to_vec(), info.master_replid.into());
+                info_map.insert(
+                    b"master_replid".to_vec(),
+                    info.master_repl_id
+                        .iter()
+                        .collect::<String>()
+                        .as_bytes()
+                        .to_vec(),
+                );
                 info_map.insert(
                     b"master_repl_offset".to_vec(),
                     info.master_repl_offset.to_string().into(),
@@ -228,6 +231,20 @@ impl RedisServer {
                 listening_port: _,
                 capa: _,
             } => RespValue::SimpleString(String::from("OK")),
+            Command::PSync {
+                repl_id: _,
+                repl_offset: _,
+            } => {
+                let state = self.state.lock().unwrap();
+                RespValue::SimpleString(
+                    vec![
+                        "FULLRESYNC",
+                        &state.info.master_repl_id.iter().collect::<String>(),
+                        "0",
+                    ]
+                    .join(" "),
+                )
+            }
         };
         let buf = res.to_bytes();
         self.socket
@@ -247,103 +264,7 @@ impl RedisServer {
                 .unwrap();
 
             let args = decode_array_of_bulkstrings(&buf);
-            let mut args = args.iter();
-            let verb = args
-                .next()
-                .expect("A command verb must be present")
-                .to_ascii_lowercase();
-            let cmd = match &verb[..] {
-                b"ping" => Command::Ping,
-                b"echo" => {
-                    let val = args.next().expect("ECHO argument");
-                    Command::Echo(val.clone())
-                }
-                b"get" => {
-                    let val = args.next().expect("GET key");
-                    Command::Get(String::from_utf8(val.clone()).expect("Key must be UTF-8"))
-                }
-                b"set" => {
-                    let key = args.next().expect("SET key");
-                    let value = args.next().expect("SET value");
-                    let is_px_present = match args.next().map(|s| s.to_ascii_lowercase()) {
-                        Some(c) => match &c[..] {
-                            b"px" => true,
-                            _ => panic!("Invalid SET arguments"),
-                        },
-                        None => false,
-                    };
-                    let px = match is_px_present {
-                        true => {
-                            let px = args.next().expect("expiry argument");
-                            let px = String::from_utf8(px.clone()).expect("Valid string");
-                            let px = px.parse::<usize>().expect("Valid number");
-                            Some(px)
-                        }
-                        false => None,
-                    };
-
-                    Command::Set {
-                        key: String::from_utf8(key.clone()).expect("Valid UTF-8 key"),
-                        value: String::from_utf8(value.clone()).expect("Valid UTF-8 value"),
-                        px: px,
-                    }
-                }
-                b"info" => {
-                    let info_arg =
-                        args.next()
-                            .map(|v| v.to_ascii_lowercase())
-                            .map(|v| match &v[..] {
-                                b"replication" => InfoArg::Replication,
-                                _ => panic!("Invalid info argument {:?}", v),
-                            });
-                    Command::Info(info_arg)
-                }
-                b"replconf" => {
-                    let mut listening_port = None;
-                    let mut capa = Vec::new();
-
-                    loop {
-                        let arg = match args.next() {
-                            Some(c) => c,
-                            None => break,
-                        };
-                        match &arg[..] {
-                            b"listening-port" => {
-                                listening_port = Some(
-                                    String::from_utf8(
-                                        args.next()
-                                            .expect("Listening port must be present")
-                                            .clone(),
-                                    )
-                                    .expect("Valid UTF-8 string for listening port")
-                                    .parse::<u16>()
-                                    .expect("Valid u16 port number"),
-                                );
-                            }
-                            b"capa" => capa.push(
-                                String::from_utf8(
-                                    args.next()
-                                        .expect("Capability argument must be present")
-                                        .clone(),
-                                )
-                                .expect("Valid UTF-8 string for capability argument"),
-                            ),
-                            c => {
-                                panic!("Unknown REPLCONF argument: {:?}", c);
-                            }
-                        };
-                    }
-
-                    Command::ReplConf {
-                        listening_port,
-                        capa,
-                    }
-                }
-                _ => panic!("Unknown verb: {:?}", verb),
-            };
-            if args.next().is_some() {
-                panic!("Unexpected arguments")
-            }
+            let cmd = Command::from_bytes(&args);
             self.respond(&cmd).await;
         }
     }
