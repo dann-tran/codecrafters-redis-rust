@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
+use clap::Parser;
 use redis_starter_rust::command::{respond, Command};
 use redis_starter_rust::resp::decode_array_of_bulkstrings;
 use redis_starter_rust::Db;
@@ -58,18 +60,28 @@ async fn handler(mut socket: TcpStream, db: Db) {
             }
             _ => panic!("Unknown verb: {:?}", verb),
         };
+        if args.next().is_some() {
+            panic!("Unexpected arguments")
+        }
         respond(&mut socket, &db, &cmd).await;
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(long, default_value_t = 6379)]
+    port: u16,
+}
+
 #[tokio::main]
 async fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    println!("Logs from your program will appear here!");
+    let Args { port } = Args::parse();
 
-    let listener = TcpListener::bind("127.0.0.1:6379")
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
+    let listener = TcpListener::bind(&addr)
         .await
-        .context("List at 127.0.0.1:6379")
+        .context(format!("Listen at {}", addr))
         .unwrap();
 
     let db = Arc::new(Mutex::new(HashMap::new()));
