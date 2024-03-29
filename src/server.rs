@@ -48,6 +48,21 @@ pub struct RedisState {
     pub db: HashMap<String, DbValue>,
 }
 
+async fn send_array(socket: &mut TcpStream, arr: &Vec<Vec<u8>>) {
+    let buf = RespValue::Array(
+        arr.iter()
+            .map(|x| RespValue::BulkString(x.clone()))
+            .collect(),
+    )
+    .to_bytes();
+    socket.write_all(&buf).await.unwrap();
+}
+
+async fn assert_recv(buf: &mut [u8; 1024], socket: &mut TcpStream, expected: &Vec<u8>) {
+    socket.read(buf).await.context("Read from client").unwrap();
+    assert!(buf.starts_with(expected));
+}
+
 impl RedisState {
     fn new(role: RedisRole) -> RedisState {
         let info = RedisInfo::new(role);
@@ -59,6 +74,7 @@ impl RedisState {
 
     pub async fn new_slave(slave_port: u16, master_addr: &str) -> RedisState {
         let mut socket = TcpStream::connect(master_addr).await.unwrap();
+        let mut recv_buf = [0u8; 1024];
 
         // Send PING
         let req = RespValue::Array(vec![RespValue::BulkString("PING".into())]);
@@ -66,56 +82,53 @@ impl RedisState {
         socket.write_all(&send_buf).await.unwrap();
 
         // Receive PONG
-        let mut recv_buf = [0u8; 1024];
-        socket
-            .read(&mut recv_buf)
-            .await
-            .context("Read from client")
-            .unwrap();
-        let expected_res = RespValue::SimpleString(String::from("PONG")).to_bytes();
-        assert!(recv_buf.starts_with(&expected_res));
+        assert_recv(
+            &mut recv_buf,
+            &mut socket,
+            &RespValue::SimpleString(String::from("PONG")).to_bytes(),
+        )
+        .await;
 
         // Send REPLCONF listening-port
-        let buf = RespValue::Array(
-            vec![
+        send_array(
+            &mut socket,
+            &vec![
                 b"REPLCONF".to_vec(),
                 b"listening-port".to_vec(),
                 slave_port.to_string().as_bytes().to_vec(),
-            ]
-            .iter()
-            .map(|x| RespValue::BulkString(x.clone()))
-            .collect(),
+            ],
         )
-        .to_bytes();
-        socket.write_all(&buf).await.unwrap();
+        .await;
 
         // Receive OK
-        socket
-            .read(&mut recv_buf)
-            .await
-            .context("Read from client")
-            .unwrap();
-        let expected_res = RespValue::SimpleString(String::from("OK")).to_bytes();
-        assert!(recv_buf.starts_with(&expected_res));
+        assert_recv(
+            &mut recv_buf,
+            &mut socket,
+            &RespValue::SimpleString(String::from("OK")).to_bytes(),
+        )
+        .await;
 
         // Send REPLCONF capa
-        let buf = RespValue::Array(
-            vec![b"REPLCONF".to_vec(), b"capa".to_vec(), b"psync2".to_vec()]
-                .iter()
-                .map(|x| RespValue::BulkString(x.clone()))
-                .collect(),
+        send_array(
+            &mut socket,
+            &vec![b"REPLCONF".to_vec(), b"capa".to_vec(), b"psync2".to_vec()],
         )
-        .to_bytes();
-        socket.write_all(&buf).await.unwrap();
+        .await;
 
         // Receive OK
-        socket
-            .read(&mut recv_buf)
-            .await
-            .context("Read from client")
-            .unwrap();
-        let expected_res = RespValue::SimpleString(String::from("OK")).to_bytes();
-        assert!(recv_buf.starts_with(&expected_res));
+        assert_recv(
+            &mut recv_buf,
+            &mut socket,
+            &RespValue::SimpleString(String::from("OK")).to_bytes(),
+        )
+        .await;
+
+        // Send PSYNC
+        send_array(
+            &mut socket,
+            &vec![b"PSYNC".to_vec(), b"?".to_vec(), b"-1".to_vec()],
+        )
+        .await;
 
         Self::new(RedisRole::Slave)
     }
