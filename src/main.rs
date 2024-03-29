@@ -27,12 +27,12 @@ async fn main() {
 
     let state = match replicaof {
         Some(v) => {
-            let (host, remaining) = v.split_first().expect("Host argument");
-            let (port, remaining) = remaining.split_first().expect("Port argument");
+            let (master_host, remaining) = v.split_first().expect("Host argument");
+            let (master_port, remaining) = remaining.split_first().expect("Port argument");
             assert!(remaining.is_empty());
 
-            let addr = format!("{}:{}", host, port);
-            RedisState::new_slave(&addr).await
+            let addr = format!("{}:{}", master_host, master_port);
+            RedisState::new_slave(port, &addr).await
         }
         None => RedisState::new_master(),
     };
