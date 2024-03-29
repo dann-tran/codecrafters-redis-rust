@@ -19,6 +19,21 @@ pub enum RedisRole {
 
 pub struct RedisInfo {
     pub role: RedisRole,
+    pub master_replid: [u8; 40],
+    pub master_repl_offset: usize,
+}
+
+impl RedisInfo {
+    pub fn new(role: RedisRole) -> RedisInfo {
+        RedisInfo {
+            role,
+            master_replid: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+                .as_bytes()
+                .try_into()
+                .expect("Valid 40-character string"),
+            master_repl_offset: 0,
+        }
+    }
 }
 
 pub struct RedisState {

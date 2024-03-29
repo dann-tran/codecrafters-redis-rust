@@ -108,7 +108,7 @@ async fn main() {
         }
         None => RedisRole::Master,
     };
-    let info = RedisInfo { role };
+    let info = RedisInfo::new(role);
     let state = RedisState {
         info,
         db: HashMap::new(),

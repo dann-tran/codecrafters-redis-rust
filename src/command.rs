@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Context;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
@@ -60,13 +62,29 @@ pub async fn respond(socket: &mut TcpStream, state: &StateWithMutex, command: &C
         Command::Info(_) => {
             let state = state.lock().unwrap();
             let info = &state.info;
-            let mut role_info = b"role:".to_vec();
-            let role_string = match info.role {
-                RedisRole::Master => b"master".to_vec(),
-                RedisRole::Slave => b"slave".to_vec(),
-            };
-            role_info.extend(&role_string);
-            RespValue::BulkString(role_info)
+            let mut info_map = HashMap::<Vec<u8>, Vec<u8>>::new();
+            info_map.insert(
+                b"role".to_vec(),
+                match info.role {
+                    RedisRole::Master => b"master".to_vec(),
+                    RedisRole::Slave => b"slave".to_vec(),
+                },
+            );
+            info_map.insert(b"master_replid".to_vec(), info.master_replid.into());
+            info_map.insert(
+                b"master_repl_offset".to_vec(),
+                info.master_repl_offset.to_string().into(),
+            );
+            let lines = info_map.iter().fold(Vec::new(), |mut acc, (k, v)| {
+                if !acc.is_empty() {
+                    acc.push(b'\n');
+                }
+                acc.extend(k);
+                acc.push(b':');
+                acc.extend(v);
+                acc
+            });
+            RespValue::BulkString(lines)
         }
     };
     let buf = serialize(&res);
