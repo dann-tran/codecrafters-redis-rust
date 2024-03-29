@@ -7,6 +7,10 @@ use crate::{
     Db, DbValue,
 };
 
+pub enum InfoArg {
+    Replication,
+}
+
 pub enum Command {
     Ping,
     Echo(Vec<u8>),
@@ -16,6 +20,7 @@ pub enum Command {
         px: Option<usize>,
     },
     Get(String),
+    Info(Option<InfoArg>),
 }
 
 pub async fn respond(socket: &mut TcpStream, db: &Db, command: &Command) {
@@ -50,6 +55,7 @@ pub async fn respond(socket: &mut TcpStream, db: &Db, command: &Command) {
                 None => RespValue::NullBulkString,
             }
         }
+        Command::Info(_) => RespValue::BulkString(b"role:master".into()),
     };
     let buf = serialize(&res);
     socket

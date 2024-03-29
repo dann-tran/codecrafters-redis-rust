@@ -1,10 +1,11 @@
+use core::panic;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use clap::Parser;
-use redis_starter_rust::command::{respond, Command};
+use redis_starter_rust::command::{respond, Command, InfoArg};
 use redis_starter_rust::resp::decode_array_of_bulkstrings;
 use redis_starter_rust::Db;
 use tokio::io::AsyncReadExt;
@@ -21,7 +22,10 @@ async fn handler(mut socket: TcpStream, db: Db) {
 
         let args = decode_array_of_bulkstrings(&buf);
         let mut args = args.iter();
-        let verb = args.next().expect("A command verb must be present");
+        let verb = args
+            .next()
+            .expect("A command verb must be present")
+            .to_ascii_lowercase();
         let cmd = match &verb[..] {
             b"ping" => Command::Ping,
             b"echo" => {
@@ -57,6 +61,16 @@ async fn handler(mut socket: TcpStream, db: Db) {
                     value: String::from_utf8(value.clone()).expect("Valid UTF-8 value"),
                     px: px,
                 }
+            }
+            b"info" => {
+                let info_arg = args
+                    .next()
+                    .map(|v| v.to_ascii_lowercase())
+                    .map(|v| match &v[..] {
+                        b"replication" => InfoArg::Replication,
+                        _ => panic!("Invalid info argument {:?}", v),
+                    });
+                Command::Info(info_arg)
             }
             _ => panic!("Unknown verb: {:?}", verb),
         };
