@@ -7,11 +7,11 @@ use anyhow::Context;
 use clap::Parser;
 use redis_starter_rust::command::{respond, Command, InfoArg};
 use redis_starter_rust::resp::decode_array_of_bulkstrings;
-use redis_starter_rust::Db;
+use redis_starter_rust::{RedisInfo, RedisRole, RedisState, StateWithMutex};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
-async fn handler(mut socket: TcpStream, db: Db) {
+async fn handler(mut socket: TcpStream, db: StateWithMutex) {
     loop {
         let mut buf = [0u8; 1024];
         socket
@@ -83,14 +83,16 @@ async fn handler(mut socket: TcpStream, db: Db) {
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {
+struct Cli {
     #[arg(long, default_value_t = 6379)]
     port: u16,
+    #[arg(long, num_args = 2, value_delimiter = ' ')]
+    replicaof: Option<Vec<String>>,
 }
 
 #[tokio::main]
 async fn main() {
-    let Args { port } = Args::parse();
+    let Cli { port, replicaof } = Cli::parse();
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
     let listener = TcpListener::bind(&addr)
@@ -98,7 +100,21 @@ async fn main() {
         .context(format!("Listen at {}", addr))
         .unwrap();
 
-    let db = Arc::new(Mutex::new(HashMap::new()));
+    let role = match replicaof {
+        Some(v) => {
+            let (host, remaining) = v.split_first().expect("Host argument");
+            let (port, remaning) = v.split_first().expect("Port argument");
+            RedisRole::Slave
+        }
+        None => RedisRole::Master,
+    };
+    let info = RedisInfo { role };
+    let state = RedisState {
+        info,
+        db: HashMap::new(),
+    };
+
+    let db = Arc::new(Mutex::new(state));
 
     loop {
         let (socket, _) = listener

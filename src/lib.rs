@@ -12,7 +12,21 @@ pub struct DbValue {
     expiry: Option<u128>,
 }
 
-pub type Db = Arc<Mutex<HashMap<String, DbValue>>>;
+pub enum RedisRole {
+    Master,
+    Slave,
+}
+
+pub struct RedisInfo {
+    pub role: RedisRole,
+}
+
+pub struct RedisState {
+    pub info: RedisInfo,
+    pub db: HashMap<String, DbValue>,
+}
+
+pub type StateWithMutex = Arc<Mutex<RedisState>>;
 
 pub fn get_current_ms() -> u128 {
     SystemTime::now()
