@@ -1,12 +1,12 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RespValue {
+pub(crate) enum RespValue {
     SimpleString(String),
     BulkString(Vec<u8>),
     Array(Vec<RespValue>),
     NullBulkString,
 }
 
-pub trait ToBytes {
+pub(crate) trait ToBytes {
     fn to_bytes(&self) -> Vec<u8>;
 }
 
@@ -57,7 +57,7 @@ fn bytes2usize(bytes: &[u8]) -> usize {
         .expect("Valid number")
 }
 
-pub fn decode(bytes: &[u8]) -> (RespValue, &[u8]) {
+pub(crate) fn decode(bytes: &[u8]) -> (RespValue, &[u8]) {
     match bytes.iter().nth(0).expect("RESP-encoded must not be empty") {
         b'+' => {
             // simple string
@@ -96,7 +96,7 @@ pub fn decode(bytes: &[u8]) -> (RespValue, &[u8]) {
     }
 }
 
-pub fn decode_array_of_bulkstrings(bytes: &[u8]) -> Vec<Vec<u8>> {
+pub(crate) fn decode_array_of_bulkstrings(bytes: &[u8]) -> Vec<Vec<u8>> {
     let (cmd, _) = decode(bytes);
     let values = match cmd {
         RespValue::Array(values) => values,
