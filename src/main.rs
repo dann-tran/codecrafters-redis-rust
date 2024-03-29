@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use clap::Parser;
 use redis_starter_rust::command::{respond, Command, InfoArg};
-use redis_starter_rust::resp::decode_array_of_bulkstrings;
+use redis_starter_rust::resp::{decode_array_of_bulkstrings, RespValue, ToBytes};
 use redis_starter_rust::{RedisInfo, RedisRole, RedisState, StateWithMutex};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 async fn handler(mut socket: TcpStream, db: StateWithMutex) {
@@ -103,7 +103,15 @@ async fn main() {
     let role = match replicaof {
         Some(v) => {
             let (host, remaining) = v.split_first().expect("Host argument");
-            let (port, remaning) = v.split_first().expect("Port argument");
+            let (port, remaining) = remaining.split_first().expect("Port argument");
+            assert!(remaining.is_empty());
+
+            let addr = format!("{}:{}", host, port);
+            let mut socket = TcpStream::connect(addr).await.unwrap();
+            let req = RespValue::Array(vec![RespValue::BulkString("PING".into())]);
+            let buf = req.to_bytes();
+            socket.write_all(&buf).await.unwrap();
+
             RedisRole::Slave
         }
         None => RedisRole::Master,

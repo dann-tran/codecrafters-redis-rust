@@ -6,26 +6,33 @@ pub enum RespValue {
     NullBulkString,
 }
 
-pub fn serialize(resp: &RespValue) -> Vec<u8> {
-    match resp {
-        RespValue::SimpleString(val) => format!("+{}\r\n", val).into_bytes(),
-        RespValue::BulkString(vec) => {
-            let mut bytes = Vec::new();
-            bytes.push(b'$');
-            bytes.extend(vec.len().to_string().into_bytes());
-            bytes.extend(b"\r\n");
-            bytes.extend(vec.iter());
-            bytes.extend(b"\r\n");
-            bytes
+pub trait ToBytes {
+    fn to_bytes(&self) -> Vec<u8>;
+}
+
+impl ToBytes for RespValue {
+    fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            RespValue::SimpleString(val) => format!("+{}\r\n", val).into_bytes(),
+            RespValue::BulkString(vec) => {
+                let mut bytes = Vec::new();
+                bytes.push(b'$');
+                bytes.extend(vec.len().to_string().into_bytes());
+                bytes.extend(b"\r\n");
+                bytes.extend(vec.iter());
+                bytes.extend(b"\r\n");
+                bytes
+            }
+            RespValue::Array(values) => {
+                let mut bytes = Vec::new();
+                bytes.push(b'*');
+                bytes.extend(values.len().to_string().as_bytes());
+                bytes.extend(b"\r\n");
+                values.iter().for_each(|val| bytes.extend(val.to_bytes()));
+                bytes
+            }
+            RespValue::NullBulkString => b"$-1\r\n".into(),
         }
-        RespValue::Array(values) => {
-            let mut bytes = Vec::new();
-            bytes.push(b'*');
-            bytes.extend(values.len().to_string().as_bytes());
-            values.iter().for_each(|val| bytes.extend(serialize(val)));
-            bytes
-        }
-        RespValue::NullBulkString => b"$-1\r\n".into(),
     }
 }
 
@@ -132,5 +139,11 @@ mod tests {
             RespValue::BulkString(b"world".into()),
         ]);
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_encode_array() {
+        let actual = RespValue::Array(vec![RespValue::BulkString(b"PING".into())]).to_bytes();
+        assert_eq!(actual, b"*1\r\n$4\r\nPING\r\n");
     }
 }

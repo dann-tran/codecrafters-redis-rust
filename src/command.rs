@@ -5,7 +5,7 @@ use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use crate::{
     get_current_ms,
-    resp::{serialize, RespValue},
+    resp::{RespValue, ToBytes},
     DbValue, RedisRole, StateWithMutex,
 };
 
@@ -87,7 +87,7 @@ pub async fn respond(socket: &mut TcpStream, state: &StateWithMutex, command: &C
             RespValue::BulkString(lines)
         }
     };
-    let buf = serialize(&res);
+    let buf = res.to_bytes();
     socket
         .write_all(&buf)
         .await
