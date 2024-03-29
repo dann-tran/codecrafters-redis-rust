@@ -1,13 +1,11 @@
+use crate::ToBytes;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RespValue {
     SimpleString(String),
     BulkString(Vec<u8>),
     Array(Vec<RespValue>),
     NullBulkString,
-}
-
-pub(crate) trait ToBytes {
-    fn to_bytes(&self) -> Vec<u8>;
 }
 
 impl ToBytes for RespValue {

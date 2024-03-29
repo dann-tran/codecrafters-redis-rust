@@ -3,10 +3,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::resp::{decode_array_of_bulkstrings, RespValue, ToBytes};
 use crate::{
     command::{Command, InfoArg},
     utils::get_current_ms,
+};
+use crate::{
+    resp::{decode_array_of_bulkstrings, RespValue},
+    ToBytes,
 };
 use anyhow::Context;
 use tokio::{
@@ -58,9 +61,14 @@ async fn send_array(socket: &mut TcpStream, arr: &Vec<Vec<u8>>) {
     socket.write_all(&buf).await.unwrap();
 }
 
-async fn assert_recv(buf: &mut [u8; 1024], socket: &mut TcpStream, expected: &Vec<u8>) {
+async fn recv_then_assert(buf: &mut [u8; 1024], socket: &mut TcpStream, expected: &Vec<u8>) {
     socket.read(buf).await.context("Read from client").unwrap();
-    assert!(buf.starts_with(expected));
+    assert!(
+        buf.starts_with(expected),
+        "Expected: {:?}; Found: {:?}",
+        expected,
+        &buf[..expected.len()]
+    );
 }
 
 impl RedisState {
@@ -77,12 +85,15 @@ impl RedisState {
         let mut recv_buf = [0u8; 1024];
 
         // Send PING
-        let req = RespValue::Array(vec![RespValue::BulkString("PING".into())]);
-        let send_buf = req.to_bytes();
-        socket.write_all(&send_buf).await.unwrap();
+        let send_buf = Command::Ping.to_bytes();
+        socket
+            .write_all(&send_buf)
+            .await
+            .context("Send PING")
+            .unwrap();
 
         // Receive PONG
-        assert_recv(
+        recv_then_assert(
             &mut recv_buf,
             &mut socket,
             &RespValue::SimpleString(String::from("PONG")).to_bytes(),
@@ -90,18 +101,19 @@ impl RedisState {
         .await;
 
         // Send REPLCONF listening-port
-        send_array(
-            &mut socket,
-            &vec![
-                b"REPLCONF".to_vec(),
-                b"listening-port".to_vec(),
-                slave_port.to_string().as_bytes().to_vec(),
-            ],
-        )
-        .await;
+        let send_buf = Command::ReplConf {
+            listening_port: Some(slave_port),
+            capa: vec![],
+        }
+        .to_bytes();
+        socket
+            .write_all(&send_buf)
+            .await
+            .context("Send REPLCONF listening-port")
+            .unwrap();
 
         // Receive OK
-        assert_recv(
+        recv_then_assert(
             &mut recv_buf,
             &mut socket,
             &RespValue::SimpleString(String::from("OK")).to_bytes(),
@@ -109,14 +121,19 @@ impl RedisState {
         .await;
 
         // Send REPLCONF capa
-        send_array(
-            &mut socket,
-            &vec![b"REPLCONF".to_vec(), b"capa".to_vec(), b"psync2".to_vec()],
-        )
-        .await;
+        let send_buf = Command::ReplConf {
+            listening_port: None,
+            capa: vec![String::from("psync2")],
+        }
+        .to_bytes();
+        socket
+            .write_all(&send_buf)
+            .await
+            .context("Send REPLCONF capa")
+            .unwrap();
 
         // Receive OK
-        assert_recv(
+        recv_then_assert(
             &mut recv_buf,
             &mut socket,
             &RespValue::SimpleString(String::from("OK")).to_bytes(),
@@ -207,6 +224,10 @@ impl RedisServer {
                 });
                 RespValue::BulkString(lines)
             }
+            Command::ReplConf {
+                listening_port: _,
+                capa: _,
+            } => RespValue::SimpleString(String::from("OK")),
         };
         let buf = res.to_bytes();
         self.socket
@@ -276,6 +297,47 @@ impl RedisServer {
                                 _ => panic!("Invalid info argument {:?}", v),
                             });
                     Command::Info(info_arg)
+                }
+                b"replconf" => {
+                    let mut listening_port = None;
+                    let mut capa = Vec::new();
+
+                    loop {
+                        let arg = match args.next() {
+                            Some(c) => c,
+                            None => break,
+                        };
+                        match &arg[..] {
+                            b"listening-port" => {
+                                listening_port = Some(
+                                    String::from_utf8(
+                                        args.next()
+                                            .expect("Listening port must be present")
+                                            .clone(),
+                                    )
+                                    .expect("Valid UTF-8 string for listening port")
+                                    .parse::<u16>()
+                                    .expect("Valid u16 port number"),
+                                );
+                            }
+                            b"capa" => capa.push(
+                                String::from_utf8(
+                                    args.next()
+                                        .expect("Capability argument must be present")
+                                        .clone(),
+                                )
+                                .expect("Valid UTF-8 string for capability argument"),
+                            ),
+                            c => {
+                                panic!("Unknown REPLCONF argument: {:?}", c);
+                            }
+                        };
+                    }
+
+                    Command::ReplConf {
+                        listening_port,
+                        capa,
+                    }
                 }
                 _ => panic!("Unknown verb: {:?}", verb),
             };
