@@ -40,7 +40,6 @@ fn split_by_clrf(bytes: &[u8]) -> (Vec<u8>, &[u8]) {
         .take_while(|&&b| b != b'\r')
         .map(|&b| b)
         .collect::<Vec<u8>>();
-    eprintln!("{}", std::str::from_utf8(&data).unwrap());
     if bytes[data.len() + 1] != b'\n' {
         panic!("Invalid clrf delimiter")
     }

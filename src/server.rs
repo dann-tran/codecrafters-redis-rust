@@ -26,6 +26,7 @@ pub struct RedisInfo {
     pub role: RedisRole,
     pub master_repl_id: [char; 40],
     pub master_repl_offset: usize,
+    pub slave_conns: Vec<TcpStream>,
 }
 
 impl RedisInfo {
@@ -38,6 +39,7 @@ impl RedisInfo {
                 .try_into()
                 .expect("40 characters"),
             master_repl_offset: 0,
+            slave_conns: Vec::new(),
         }
     }
 }
@@ -67,7 +69,10 @@ impl RedisState {
     }
 
     pub async fn new_slave(slave_port: u16, master_addr: &str) -> RedisState {
-        let mut socket = TcpStream::connect(master_addr).await.unwrap();
+        let mut socket = TcpStream::connect(master_addr)
+            .await
+            .context("Connect to master")
+            .unwrap();
         let mut recv_buf = [0u8; 1024];
 
         // Send PING
@@ -148,180 +153,183 @@ impl RedisState {
 
 pub type StateWithMutex = Arc<Mutex<RedisState>>;
 
-pub struct RedisServer {
-    pub state: StateWithMutex,
-    pub socket: TcpStream,
-}
+pub struct RedisServer(pub StateWithMutex);
 
 impl RedisServer {
-    async fn respond(&mut self, command: &Command) {
-        match command {
-            Command::Ping => {
-                let res = RespValue::SimpleString(String::from("PONG"));
-                let buf = res.to_bytes();
-
-                self.socket
-                    .write_all(&buf)
-                    .await
-                    .context("Send PONG")
-                    .unwrap();
-            }
-            Command::Echo(val) => {
-                let res = RespValue::BulkString(val.clone());
-                let buf = res.to_bytes();
-
-                self.socket
-                    .write_all(&buf)
-                    .await
-                    .context("Send ECHO response")
-                    .unwrap();
-            }
-            Command::Set { key, value, px } => {
-                let mut state = self.state.lock().await;
-                let db = &mut state.db;
-                db.insert(
-                    key.into(),
-                    DbValue {
-                        value: value.into(),
-                        expiry: px.map(|v| get_current_ms() + (v as u128)),
-                    },
-                );
-
-                let res = RespValue::SimpleString("OK".into());
-                let buf = res.to_bytes();
-
-                self.socket
-                    .write_all(&buf)
-                    .await
-                    .context("Send OK")
-                    .unwrap();
-            }
-            Command::Get(key) => {
-                let mut state = self.state.lock().await;
-                let db = &mut state.db;
-                let res = match db.get(key) {
-                    Some(DbValue { value, expiry }) => match expiry {
-                        Some(v) => {
-                            if get_current_ms() > *v {
-                                db.remove(key);
-                                RespValue::NullBulkString
-                            } else {
-                                RespValue::BulkString(value.as_bytes().into())
-                            }
-                        }
-                        None => RespValue::BulkString(value.as_bytes().into()),
-                    },
-                    None => RespValue::NullBulkString,
-                };
-                let buf = res.to_bytes();
-
-                self.socket
-                    .write_all(&buf)
-                    .await
-                    .context("Send GET response")
-                    .unwrap();
-            }
-            Command::Info(_) => {
-                let state = self.state.lock().await;
-                let info = &state.info;
-                let mut info_map = HashMap::<Vec<u8>, Vec<u8>>::new();
-                info_map.insert(
-                    b"role".to_vec(),
-                    match info.role {
-                        RedisRole::Master => b"master".to_vec(),
-                        RedisRole::Slave => b"slave".to_vec(),
-                    },
-                );
-                info_map.insert(
-                    b"master_replid".to_vec(),
-                    info.master_repl_id
-                        .iter()
-                        .collect::<String>()
-                        .as_bytes()
-                        .to_vec(),
-                );
-                info_map.insert(
-                    b"master_repl_offset".to_vec(),
-                    info.master_repl_offset.to_string().into(),
-                );
-                let lines = info_map.iter().fold(Vec::new(), |mut acc, (k, v)| {
-                    if !acc.is_empty() {
-                        acc.push(b'\n');
-                    }
-                    acc.extend(k);
-                    acc.push(b':');
-                    acc.extend(v);
-                    acc
-                });
-
-                let res = RespValue::BulkString(lines);
-                let buf = res.to_bytes();
-
-                self.socket
-                    .write_all(&buf)
-                    .await
-                    .context("Send INFO response")
-                    .unwrap();
-            }
-            Command::ReplConf {
-                listening_port: _,
-                capa: _,
-            } => {
-                let res = RespValue::SimpleString(String::from("OK"));
-                let buf = res.to_bytes();
-
-                self.socket
-                    .write_all(&buf)
-                    .await
-                    .context("Send OK")
-                    .unwrap();
-            }
-            Command::PSync {
-                repl_id: _,
-                repl_offset: _,
-            } => {
-                let state = self.state.lock().await;
-                let res = RespValue::SimpleString(
-                    vec![
-                        "FULLRESYNC",
-                        &state.info.master_repl_id.iter().collect::<String>(),
-                        "0",
-                    ]
-                    .join(" "),
-                );
-                let buf = res.to_bytes();
-
-                self.socket
-                    .write_all(&buf)
-                    .await
-                    .context("Send PSYNC response")
-                    .unwrap();
-
-                let empty_rdb = hex::decode("524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2").expect("Valid HEX string");
-                let res = RespValue::BulkString(empty_rdb);
-                let buf = res.to_bytes();
-                let buf = &buf[..buf.len() - 2];
-
-                self.socket
-                    .write_all(&buf)
-                    .await
-                    .context("Send empty RDB file")
-                    .unwrap();
-            }
-        };
-    }
-
-    pub async fn start(&mut self) {
+    pub async fn bind(&mut self, mut socket: TcpStream) {
         loop {
             let mut buf = [0u8; 1024];
-            self.socket
+            socket
                 .read(&mut buf)
                 .await
                 .context("Read from client")
                 .unwrap();
 
             let cmd = Command::from_bytes(&buf);
-            self.respond(&cmd).await;
+            match cmd {
+                Command::Ping => {
+                    eprintln!("Handling PING");
+                    let res = RespValue::SimpleString(String::from("PONG"));
+                    let buf = res.to_bytes();
+
+                    socket.write_all(&buf).await.context("Send PONG").unwrap();
+                }
+                Command::Echo(val) => {
+                    eprintln!("Handling ECHO");
+                    let res = RespValue::BulkString(val.clone());
+                    let buf = res.to_bytes();
+
+                    socket
+                        .write_all(&buf)
+                        .await
+                        .context("Send ECHO response")
+                        .unwrap();
+                }
+                Command::Set { key, value, px } => {
+                    eprintln!("Handling SET");
+                    let mut state = self.0.lock().await;
+
+                    let db = &mut state.db;
+                    db.insert(
+                        key.clone(),
+                        DbValue {
+                            value: value.clone(),
+                            expiry: px.map(|v| get_current_ms() + (v as u128)),
+                        },
+                    );
+
+                    eprintln!("Propagate SET commands to slaves");
+                    let cmd = Command::Set { key, value, px };
+                    let buf = cmd.to_bytes();
+                    for conn in state.info.slave_conns.iter_mut() {
+                        eprintln!("Propagate to {}", conn.peer_addr().unwrap());
+                        conn.write_all(&buf)
+                            .await
+                            .context("Propagate SET to slave")
+                            .unwrap();
+                    }
+
+                    let res = RespValue::SimpleString("OK".into());
+                    let buf = res.to_bytes();
+
+                    socket.write_all(&buf).await.context("Send OK").unwrap();
+                }
+                Command::Get(key) => {
+                    eprintln!("Handling GET");
+                    let mut state = self.0.lock().await;
+                    let db = &mut state.db;
+                    let res = match db.get(&key) {
+                        Some(DbValue { value, expiry }) => match expiry {
+                            Some(v) => {
+                                if get_current_ms() > *v {
+                                    db.remove(&key);
+                                    RespValue::NullBulkString
+                                } else {
+                                    RespValue::BulkString(value.as_bytes().into())
+                                }
+                            }
+                            None => RespValue::BulkString(value.as_bytes().into()),
+                        },
+                        None => RespValue::NullBulkString,
+                    };
+                    let buf = res.to_bytes();
+
+                    socket
+                        .write_all(&buf)
+                        .await
+                        .context("Send GET response")
+                        .unwrap();
+                }
+                Command::Info(_) => {
+                    eprintln!("Handling INFO");
+                    let state = self.0.lock().await;
+                    let info = &state.info;
+                    let mut info_map = HashMap::<Vec<u8>, Vec<u8>>::new();
+                    info_map.insert(
+                        b"role".to_vec(),
+                        match info.role {
+                            RedisRole::Master => b"master".to_vec(),
+                            RedisRole::Slave => b"slave".to_vec(),
+                        },
+                    );
+                    info_map.insert(
+                        b"master_replid".to_vec(),
+                        info.master_repl_id
+                            .iter()
+                            .collect::<String>()
+                            .as_bytes()
+                            .to_vec(),
+                    );
+                    info_map.insert(
+                        b"master_repl_offset".to_vec(),
+                        info.master_repl_offset.to_string().into(),
+                    );
+                    let lines = info_map.iter().fold(Vec::new(), |mut acc, (k, v)| {
+                        if !acc.is_empty() {
+                            acc.push(b'\n');
+                        }
+                        acc.extend(k);
+                        acc.push(b':');
+                        acc.extend(v);
+                        acc
+                    });
+
+                    let res = RespValue::BulkString(lines);
+                    let buf = res.to_bytes();
+
+                    socket
+                        .write_all(&buf)
+                        .await
+                        .context("Send INFO response")
+                        .unwrap();
+                }
+                Command::ReplConf {
+                    listening_port: _,
+                    capa: _,
+                } => {
+                    eprintln!("Handling REPLCONF");
+                    let res = RespValue::SimpleString(String::from("OK"));
+                    let buf = res.to_bytes();
+
+                    socket.write_all(&buf).await.context("Send OK").unwrap();
+                }
+                Command::PSync {
+                    repl_id: _,
+                    repl_offset: _,
+                } => {
+                    eprintln!("Handling PSYNC");
+                    let mut state = self.0.lock().await;
+                    let res = RespValue::SimpleString(
+                        vec![
+                            "FULLRESYNC",
+                            &state.info.master_repl_id.iter().collect::<String>(),
+                            "0",
+                        ]
+                        .join(" "),
+                    );
+                    let buf = res.to_bytes();
+
+                    socket
+                        .write_all(&buf)
+                        .await
+                        .context("Send PSYNC response")
+                        .unwrap();
+
+                    let empty_rdb = hex::decode("524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2").expect("Valid HEX string");
+                    let res = RespValue::BulkString(empty_rdb);
+                    let buf = res.to_bytes();
+                    let buf = &buf[..buf.len() - 2];
+
+                    socket
+                        .write_all(&buf)
+                        .await
+                        .context("Send empty RDB file")
+                        .unwrap();
+
+                    state.info.slave_conns.push(socket);
+                    break;
+                }
+            };
         }
     }
 }

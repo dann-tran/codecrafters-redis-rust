@@ -46,7 +46,8 @@ async fn main() {
             .await
             .context("Accept connection")
             .unwrap();
+        eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
         let state = state.clone();
-        tokio::spawn(async move { RedisServer { socket, state }.start().await });
+        tokio::spawn(async move { RedisServer(state).bind(socket).await });
     }
 }
