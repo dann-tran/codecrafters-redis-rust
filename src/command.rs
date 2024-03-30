@@ -1,4 +1,7 @@
-use crate::{resp::RespValue, ToBytes};
+use crate::{
+    resp::{decode_array_of_bulkstrings, RespValue},
+    ToBytes,
+};
 
 pub(crate) enum InfoArg {
     Replication,
@@ -107,13 +110,16 @@ impl ToBytes for Command {
 }
 
 pub(crate) trait FromBytes {
-    fn from_bytes(args: &Vec<Vec<u8>>) -> Self;
+    fn from_bytes(bytes: &[u8]) -> Self;
 }
 
 impl FromBytes for Command {
-    fn from_bytes(args: &Vec<Vec<u8>>) -> Self {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        let args = decode_array_of_bulkstrings(bytes);
+
         let (verb, mut remaining) = args.split_first().expect("Command verb must be present");
         let verb = verb.to_ascii_lowercase();
+
         let cmd = match &verb[..] {
             b"ping" => Command::Ping,
             b"echo" => {

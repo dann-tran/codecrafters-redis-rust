@@ -1,10 +1,11 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
 use redis_starter_rust::server::{RedisServer, RedisState};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

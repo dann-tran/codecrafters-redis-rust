@@ -1,20 +1,15 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     command::{Command, FromBytes},
     utils::get_current_ms,
 };
-use crate::{
-    resp::{decode_array_of_bulkstrings, RespValue},
-    ToBytes,
-};
+use crate::{resp::RespValue, ToBytes};
 use anyhow::Context;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::Mutex,
 };
 
 pub struct DbValue {
@@ -160,11 +155,29 @@ pub struct RedisServer {
 
 impl RedisServer {
     async fn respond(&mut self, command: &Command) {
-        let res = match command {
-            Command::Ping => RespValue::SimpleString(String::from("PONG")),
-            Command::Echo(val) => RespValue::BulkString(val.clone()),
+        match command {
+            Command::Ping => {
+                let res = RespValue::SimpleString(String::from("PONG"));
+                let buf = res.to_bytes();
+
+                self.socket
+                    .write_all(&buf)
+                    .await
+                    .context("Send PONG")
+                    .unwrap();
+            }
+            Command::Echo(val) => {
+                let res = RespValue::BulkString(val.clone());
+                let buf = res.to_bytes();
+
+                self.socket
+                    .write_all(&buf)
+                    .await
+                    .context("Send ECHO response")
+                    .unwrap();
+            }
             Command::Set { key, value, px } => {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock().await;
                 let db = &mut state.db;
                 db.insert(
                     key.into(),
@@ -173,12 +186,20 @@ impl RedisServer {
                         expiry: px.map(|v| get_current_ms() + (v as u128)),
                     },
                 );
-                RespValue::SimpleString("OK".into())
+
+                let res = RespValue::SimpleString("OK".into());
+                let buf = res.to_bytes();
+
+                self.socket
+                    .write_all(&buf)
+                    .await
+                    .context("Send OK")
+                    .unwrap();
             }
             Command::Get(key) => {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock().await;
                 let db = &mut state.db;
-                match db.get(key) {
+                let res = match db.get(key) {
                     Some(DbValue { value, expiry }) => match expiry {
                         Some(v) => {
                             if get_current_ms() > *v {
@@ -191,10 +212,17 @@ impl RedisServer {
                         None => RespValue::BulkString(value.as_bytes().into()),
                     },
                     None => RespValue::NullBulkString,
-                }
+                };
+                let buf = res.to_bytes();
+
+                self.socket
+                    .write_all(&buf)
+                    .await
+                    .context("Send GET response")
+                    .unwrap();
             }
             Command::Info(_) => {
-                let state = self.state.lock().unwrap();
+                let state = self.state.lock().await;
                 let info = &state.info;
                 let mut info_map = HashMap::<Vec<u8>, Vec<u8>>::new();
                 info_map.insert(
@@ -225,33 +253,62 @@ impl RedisServer {
                     acc.extend(v);
                     acc
                 });
-                RespValue::BulkString(lines)
+
+                let res = RespValue::BulkString(lines);
+                let buf = res.to_bytes();
+
+                self.socket
+                    .write_all(&buf)
+                    .await
+                    .context("Send INFO response")
+                    .unwrap();
             }
             Command::ReplConf {
                 listening_port: _,
                 capa: _,
-            } => RespValue::SimpleString(String::from("OK")),
+            } => {
+                let res = RespValue::SimpleString(String::from("OK"));
+                let buf = res.to_bytes();
+
+                self.socket
+                    .write_all(&buf)
+                    .await
+                    .context("Send OK")
+                    .unwrap();
+            }
             Command::PSync {
                 repl_id: _,
                 repl_offset: _,
             } => {
-                let state = self.state.lock().unwrap();
-                RespValue::SimpleString(
+                let state = self.state.lock().await;
+                let res = RespValue::SimpleString(
                     vec![
                         "FULLRESYNC",
                         &state.info.master_repl_id.iter().collect::<String>(),
                         "0",
                     ]
                     .join(" "),
-                )
+                );
+                let buf = res.to_bytes();
+
+                self.socket
+                    .write_all(&buf)
+                    .await
+                    .context("Send PSYNC response")
+                    .unwrap();
+
+                let empty_rdb = hex::decode("524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2").expect("Valid HEX string");
+                let res = RespValue::BulkString(empty_rdb);
+                let buf = res.to_bytes();
+                let buf = &buf[..buf.len() - 2];
+
+                self.socket
+                    .write_all(&buf)
+                    .await
+                    .context("Send empty RDB file")
+                    .unwrap();
             }
         };
-        let buf = res.to_bytes();
-        self.socket
-            .write_all(&buf)
-            .await
-            .context("Send PONG response")
-            .unwrap();
     }
 
     pub async fn start(&mut self) {
@@ -263,8 +320,7 @@ impl RedisServer {
                 .context("Read from client")
                 .unwrap();
 
-            let args = decode_array_of_bulkstrings(&buf);
-            let cmd = Command::from_bytes(&args);
+            let cmd = Command::from_bytes(&buf);
             self.respond(&cmd).await;
         }
     }
