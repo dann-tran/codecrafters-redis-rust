@@ -1,5 +1,3 @@
-use crate::ToBytes;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RespValue {
     SimpleString(String),
@@ -8,8 +6,8 @@ pub(crate) enum RespValue {
     NullBulkString,
 }
 
-impl ToBytes for RespValue {
-    fn to_bytes(&self) -> Vec<u8> {
+impl RespValue {
+    pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             RespValue::SimpleString(val) => format!("+{}\r\n", val).into_bytes(),
             RespValue::BulkString(vec) => {
@@ -93,20 +91,23 @@ pub(crate) fn decode(bytes: &[u8]) -> (RespValue, &[u8]) {
     }
 }
 
-pub(crate) fn decode_array_of_bulkstrings(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let (cmd, _) = decode(bytes);
+pub(crate) fn decode_array_of_bulkstrings(bytes: &[u8]) -> (Vec<Vec<u8>>, &[u8]) {
+    let (cmd, remaining) = decode(bytes);
     let values = match cmd {
         RespValue::Array(values) => values,
         o => panic!("Command must be an array, found {:?}", o),
     };
-    values
+
+    let arr = values
         .iter()
         .map(|val| match val {
             RespValue::BulkString(x) => x,
             o => panic!("Command elements must be bulk strings, found {:?}", o),
         })
         .map(|x| x.clone())
-        .collect::<Vec<Vec<u8>>>()
+        .collect::<Vec<Vec<u8>>>();
+
+    (arr, remaining)
 }
 
 #[cfg(test)]

@@ -1,7 +1,4 @@
-use crate::{
-    resp::{decode_array_of_bulkstrings, RespValue},
-    ToBytes,
-};
+use crate::resp::{decode_array_of_bulkstrings, RespValue};
 
 #[derive(Debug)]
 pub enum InfoArg {
@@ -29,8 +26,8 @@ pub enum Command {
     },
 }
 
-impl ToBytes for Command {
-    fn to_bytes(&self) -> Vec<u8> {
+impl Command {
+    pub fn to_bytes(&self) -> Vec<u8> {
         let args = match self {
             Command::Ping => vec![b"PING".to_vec()],
             Command::Echo(arg) => vec![b"ECHO".to_vec(), arg.clone()],
@@ -109,15 +106,9 @@ impl ToBytes for Command {
             .collect::<Vec<RespValue>>();
         RespValue::Array(args).to_bytes()
     }
-}
 
-pub(crate) trait FromBytes {
-    fn from_bytes(bytes: &[u8]) -> Self;
-}
-
-impl FromBytes for Command {
-    fn from_bytes(bytes: &[u8]) -> Self {
-        let args = decode_array_of_bulkstrings(bytes);
+    pub fn from_bytes(bytes: &[u8]) -> (Self, &[u8]) {
+        let (args, remaining_bytes) = decode_array_of_bulkstrings(bytes);
 
         let (verb, mut remaining) = args.split_first().expect("Command verb must be present");
         let verb = verb.to_ascii_lowercase();
@@ -264,6 +255,6 @@ impl FromBytes for Command {
             panic!("Unexpected arguments")
         }
 
-        cmd
+        (cmd, remaining_bytes)
     }
 }

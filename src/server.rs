@@ -1,10 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{
-    command::{Command, FromBytes},
-    utils::get_current_ms,
-};
-use crate::{resp::RespValue, ToBytes};
+use crate::resp::RespValue;
+use crate::{command::Command, utils::get_current_ms};
 use anyhow::Context;
 use async_trait::async_trait;
 use tokio::{
@@ -107,7 +104,7 @@ pub trait RedisServerHandler: RedisServerGetter {
                 .await
                 .context("Read from client")
                 .unwrap();
-            let cmd = Command::from_bytes(&buf);
+            let (cmd, _) = Command::from_bytes(&buf);
 
             match cmd {
                 Command::Ping => {
@@ -264,11 +261,9 @@ impl RedisServerHandler for RedisMaster {
                 .context("Propagate SET to slave")
                 .unwrap();
         }
+        drop(repl_conns);
 
-        let res = RespValue::SimpleString("OK".into());
-        let buf = res.to_bytes();
-
-        socket.write_all(&buf).await.context("Send OK").unwrap();
+        send_simple_string(socket, "OK").await;
     }
 
     async fn handle_replconf(&self, socket: &mut TcpStream) {
@@ -301,6 +296,7 @@ impl RedisServerHandler for RedisMaster {
 
         let mut repl_conns = self.repl_conns.lock().await;
         repl_conns.push(socket);
+        drop(repl_conns);
     }
 }
 
@@ -361,24 +357,15 @@ impl RedisServerHandler for RedisRepl {
 }
 
 impl RedisRepl {
-    async fn assert_recv_simple_string(
-        buf: &mut [u8],
-        socket: &mut TcpStream,
-        expected: Option<&str>,
-    ) {
+    async fn assert_recv_simple_string(buf: &mut [u8], socket: &mut TcpStream, expected: &str) {
         socket.read(buf).await.context("Read from client").unwrap();
-        match expected {
-            Some(expected) => {
-                let expected_encoded = &RespValue::SimpleString(expected.to_string()).to_bytes();
-                assert!(
-                    buf.starts_with(expected_encoded),
-                    "Expected: {:?}; Found: {:?}",
-                    expected_encoded,
-                    &buf[..expected_encoded.len()]
-                );
-            }
-            None => {}
-        }
+        let expected_encoded = &RespValue::SimpleString(expected.to_string()).to_bytes();
+        assert!(
+            buf.starts_with(expected_encoded),
+            "Expected: {:?}; Found: {:?}",
+            expected_encoded,
+            &buf[..expected_encoded.len()]
+        );
     }
 
     pub async fn new(port: u16, socket: &mut TcpStream) -> Self {
@@ -386,7 +373,7 @@ impl RedisRepl {
 
         // Send PING
         Self::send_cmd(socket, &Command::Ping).await;
-        Self::assert_recv_simple_string(&mut recv_buf, socket, Some("PONG")).await;
+        Self::assert_recv_simple_string(&mut recv_buf, socket, "PONG").await;
 
         // Send REPLCONF listening-port
         Self::send_cmd(
@@ -397,7 +384,7 @@ impl RedisRepl {
             },
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, socket, Some("OK")).await;
+        Self::assert_recv_simple_string(&mut recv_buf, socket, "OK").await;
 
         // Send REPLCONF capa
         Self::send_cmd(
@@ -408,7 +395,7 @@ impl RedisRepl {
             },
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, socket, Some("OK")).await;
+        Self::assert_recv_simple_string(&mut recv_buf, socket, "OK").await;
 
         // Send PSYNC
         Self::send_cmd(
@@ -419,7 +406,12 @@ impl RedisRepl {
             },
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, socket, None).await;
+        // receive FULLRESYNC <REPL_ID> 0
+        socket
+            .read(&mut recv_buf)
+            .await
+            .context("Read from client")
+            .unwrap();
 
         Self {
             master_info: MasterInfo::new(),
@@ -430,20 +422,26 @@ impl RedisRepl {
     pub async fn watch_master(&mut self, socket: &mut TcpStream) {
         let mut buf = [0u8; 1024];
         loop {
-            socket
+            let n = socket
                 .read(&mut buf)
                 .await
                 .context("Read from master")
                 .unwrap();
-            let cmd = Command::from_bytes(&buf);
+            let mut ptr = 0;
 
-            match cmd {
-                Command::Set { key, value, px } => {
-                    let mut store = self.store.lock().await;
-                    store.set(&key, &value, &px);
-                    drop(store);
+            while ptr < n {
+                let (cmd, remaining_bytes) = Command::from_bytes(&buf[ptr..]);
+                eprintln!("Received command from master: {:?}", cmd);
+                ptr = buf.len() - remaining_bytes.len();
+
+                match cmd {
+                    Command::Set { key, value, px } => {
+                        let mut store = self.store.lock().await;
+                        store.set(&key, &value, &px);
+                        drop(store);
+                    }
+                    c => panic!("Unexpected command from master: {:?}", c),
                 }
-                c => panic!("Unexpected command from master: {:?}", c),
             }
         }
     }
