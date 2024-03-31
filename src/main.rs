@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use anyhow::Context;
 use clap::Parser;
 use redis_starter_rust::server::{RedisMaster, RedisRepl, RedisServerHandler};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -26,7 +26,17 @@ async fn main() {
             assert!(remaining.is_empty());
 
             let master_addr = format!("{}:{}", master_host, master_port);
-            let server = RedisRepl::new(port, &master_addr).await;
+            let mut master_conn = TcpStream::connect(master_addr)
+                .await
+                .context("Connect to master")
+                .unwrap();
+            let server = RedisRepl::new(port, &mut master_conn).await;
+
+            // spawn a watcher to master socket here
+            let mut master_watcher = server.clone();
+            tokio::spawn(async move {
+                master_watcher.watch_master(&mut master_conn).await;
+            });
 
             let listener = TcpListener::bind(&addr)
                 .await
@@ -42,7 +52,9 @@ async fn main() {
                 eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
 
                 let mut server = server.clone();
-                tokio::spawn(async move { server.bind(socket).await });
+                tokio::spawn(async move {
+                    server.handle_conn(socket).await;
+                });
             }
         }
         None => {
@@ -62,7 +74,7 @@ async fn main() {
                 eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
 
                 let mut server = server.clone();
-                tokio::spawn(async move { server.bind(socket).await });
+                tokio::spawn(async move { server.handle_conn(socket).await });
             }
         }
     }

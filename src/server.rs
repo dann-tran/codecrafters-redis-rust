@@ -99,9 +99,16 @@ async fn send_bulk_string(socket: &mut TcpStream, res: &[u8]) {
 
 #[async_trait]
 pub trait RedisServerHandler: RedisServerGetter {
-    async fn bind(&mut self, mut socket: TcpStream) {
+    async fn handle_conn(&mut self, mut socket: TcpStream) {
+        let mut buf = [0u8; 1024];
         loop {
-            let cmd = Self::recv_cmd(&mut socket).await;
+            socket
+                .read(&mut buf)
+                .await
+                .context("Read from client")
+                .unwrap();
+            let cmd = Command::from_bytes(&buf);
+
             match cmd {
                 Command::Ping => {
                     eprintln!("Handling PING");
@@ -185,17 +192,6 @@ pub trait RedisServerHandler: RedisServerGetter {
                 }
             }
         }
-    }
-
-    async fn recv_cmd(socket: &mut TcpStream) -> Command {
-        let mut buf = [0u8; 1024];
-        socket
-            .read(&mut buf)
-            .await
-            .context("Read from client")
-            .unwrap();
-
-        Command::from_bytes(&buf)
     }
 
     async fn send_cmd(socket: &mut TcpStream, cmd: &Command) {
@@ -322,7 +318,6 @@ impl RedisMaster {
 pub struct RedisRepl {
     pub(crate) master_info: MasterInfo,
     pub(crate) store: Arc<Mutex<RedisStore>>,
-    pub(crate) master_conn: Arc<Mutex<TcpStream>>,
 }
 
 impl RedisServerGetter for RedisRepl {
@@ -353,10 +348,7 @@ impl RedisServerHandler for RedisRepl {
         store.set(key, value, px);
         drop(store);
 
-        let res = RespValue::SimpleString("OK".into());
-        let buf = res.to_bytes();
-
-        socket.write_all(&buf).await.context("Send OK").unwrap();
+        send_simple_string(socket, "OK").await;
     }
 
     async fn handle_replconf(&self, _socket: &mut TcpStream) {
@@ -369,64 +361,90 @@ impl RedisServerHandler for RedisRepl {
 }
 
 impl RedisRepl {
-    async fn assert_recv_simple_string(buf: &mut [u8], socket: &mut TcpStream, expected: &str) {
-        let expected_encoded = &RespValue::SimpleString(expected.to_string()).to_bytes();
+    async fn assert_recv_simple_string(
+        buf: &mut [u8],
+        socket: &mut TcpStream,
+        expected: Option<&str>,
+    ) {
         socket.read(buf).await.context("Read from client").unwrap();
-        assert!(
-            buf.starts_with(expected_encoded),
-            "Expected: {:?}; Found: {:?}",
-            expected_encoded,
-            &buf[..expected_encoded.len()]
-        );
+        match expected {
+            Some(expected) => {
+                let expected_encoded = &RespValue::SimpleString(expected.to_string()).to_bytes();
+                assert!(
+                    buf.starts_with(expected_encoded),
+                    "Expected: {:?}; Found: {:?}",
+                    expected_encoded,
+                    &buf[..expected_encoded.len()]
+                );
+            }
+            None => {}
+        }
     }
 
-    pub async fn new(port: u16, master_addr: &str) -> Self {
-        let mut socket = TcpStream::connect(master_addr)
-            .await
-            .context("Connect to master")
-            .unwrap();
+    pub async fn new(port: u16, socket: &mut TcpStream) -> Self {
         let mut recv_buf = [0u8; 1024];
 
         // Send PING
-        Self::send_cmd(&mut socket, &Command::Ping).await;
-        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "PONG").await;
+        Self::send_cmd(socket, &Command::Ping).await;
+        Self::assert_recv_simple_string(&mut recv_buf, socket, Some("PONG")).await;
 
         // Send REPLCONF listening-port
         Self::send_cmd(
-            &mut socket,
+            socket,
             &Command::ReplConf {
                 listening_port: Some(port),
                 capa: vec![],
             },
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "OK").await;
+        Self::assert_recv_simple_string(&mut recv_buf, socket, Some("OK")).await;
 
         // Send REPLCONF capa
         Self::send_cmd(
-            &mut socket,
+            socket,
             &Command::ReplConf {
                 listening_port: None,
                 capa: vec![String::from("psync2")],
             },
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "OK").await;
+        Self::assert_recv_simple_string(&mut recv_buf, socket, Some("OK")).await;
 
         // Send PSYNC
         Self::send_cmd(
-            &mut socket,
+            socket,
             &Command::PSync {
                 repl_id: None,
                 repl_offset: None,
             },
         )
         .await;
+        Self::assert_recv_simple_string(&mut recv_buf, socket, None).await;
 
         Self {
             master_info: MasterInfo::new(),
             store: Arc::new(Mutex::new(RedisStore::new())),
-            master_conn: Arc::new(Mutex::new(socket)),
+        }
+    }
+
+    pub async fn watch_master(&mut self, socket: &mut TcpStream) {
+        let mut buf = [0u8; 1024];
+        loop {
+            socket
+                .read(&mut buf)
+                .await
+                .context("Read from master")
+                .unwrap();
+            let cmd = Command::from_bytes(&buf);
+
+            match cmd {
+                Command::Set { key, value, px } => {
+                    let mut store = self.store.lock().await;
+                    store.set(&key, &value, &px);
+                    drop(store);
+                }
+                c => panic!("Unexpected command from master: {:?}", c),
+            }
         }
     }
 }
