@@ -3,11 +3,13 @@ use crate::{
     ToBytes,
 };
 
-pub(crate) enum InfoArg {
+#[derive(Debug)]
+pub enum InfoArg {
     Replication,
 }
 
-pub(crate) enum Command {
+#[derive(Debug)]
+pub enum Command {
     Ping,
     Echo(Vec<u8>),
     Set {

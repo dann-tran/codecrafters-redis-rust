@@ -1,11 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use redis_starter_rust::server::{RedisServer, RedisState};
+use redis_starter_rust::server::{RedisMaster, RedisRepl, RedisServerHandler};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -21,33 +19,51 @@ async fn main() {
     let Cli { port, replicaof } = Cli::parse();
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
-    let listener = TcpListener::bind(&addr)
-        .await
-        .context(format!("Listen at {}", addr))
-        .unwrap();
-
-    let state = match replicaof {
+    match replicaof {
         Some(v) => {
             let (master_host, remaining) = v.split_first().expect("Host argument");
             let (master_port, remaining) = remaining.split_first().expect("Port argument");
             assert!(remaining.is_empty());
 
-            let addr = format!("{}:{}", master_host, master_port);
-            RedisState::new_slave(port, &addr).await
+            let master_addr = format!("{}:{}", master_host, master_port);
+            let server = RedisRepl::new(port, &master_addr).await;
+
+            let listener = TcpListener::bind(&addr)
+                .await
+                .context(format!("Listen at {}", addr))
+                .unwrap();
+
+            loop {
+                let (socket, _) = listener
+                    .accept()
+                    .await
+                    .context("Accept connection")
+                    .unwrap();
+                eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
+
+                let mut server = server.clone();
+                tokio::spawn(async move { server.bind(socket).await });
+            }
         }
-        None => RedisState::new_master(),
-    };
+        None => {
+            let server = RedisMaster::new();
 
-    let state = Arc::new(Mutex::new(state));
+            let listener = TcpListener::bind(&addr)
+                .await
+                .context(format!("Listen at {}", addr))
+                .unwrap();
 
-    loop {
-        let (socket, _) = listener
-            .accept()
-            .await
-            .context("Accept connection")
-            .unwrap();
-        eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
-        let state = state.clone();
-        tokio::spawn(async move { RedisServer(state).bind(socket).await });
+            loop {
+                let (socket, _) = listener
+                    .accept()
+                    .await
+                    .context("Accept connection")
+                    .unwrap();
+                eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
+
+                let mut server = server.clone();
+                tokio::spawn(async move { server.bind(socket).await });
+            }
+        }
     }
 }
