@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use crate::command::ReplConfArg;
 use crate::resp::RespValue;
 use crate::{command::Command, utils::get_current_ms};
 use anyhow::Context;
@@ -176,10 +177,7 @@ pub trait RedisServerHandler: RedisServerGetter {
                         .context("Send INFO response")
                         .unwrap();
                 }
-                Command::ReplConf {
-                    listening_port: _,
-                    capa: _,
-                } => self.handle_replconf(&mut socket).await,
+                Command::ReplConf(_) => self.handle_replconf(&mut socket).await,
                 Command::PSync {
                     repl_id: _,
                     repl_offset: _,
@@ -348,7 +346,7 @@ impl RedisServerHandler for RedisRepl {
     }
 
     async fn handle_replconf(&self, _socket: &mut TcpStream) {
-        panic!("Replication server does not expect REPLCONF command");
+        panic!("Replication server does not expect REPLCONF command from client");
     }
 
     async fn handle_psync(&self, _socket: TcpStream) {
@@ -368,38 +366,32 @@ impl RedisRepl {
         );
     }
 
-    pub async fn new(port: u16, socket: &mut TcpStream) -> Self {
+    pub async fn new(port: u16, mut socket: TcpStream) -> Self {
         let mut recv_buf = [0u8; 1024];
 
         // Send PING
-        Self::send_cmd(socket, &Command::Ping).await;
-        Self::assert_recv_simple_string(&mut recv_buf, socket, "PONG").await;
+        Self::send_cmd(&mut socket, &Command::Ping).await;
+        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "PONG").await;
 
         // Send REPLCONF listening-port
         Self::send_cmd(
-            socket,
-            &Command::ReplConf {
-                listening_port: Some(port),
-                capa: vec![],
-            },
+            &mut socket,
+            &Command::ReplConf(ReplConfArg::ListeningPort(port)),
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, socket, "OK").await;
+        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "OK").await;
 
         // Send REPLCONF capa
         Self::send_cmd(
-            socket,
-            &Command::ReplConf {
-                listening_port: None,
-                capa: vec![String::from("psync2")],
-            },
+            &mut socket,
+            &Command::ReplConf(ReplConfArg::Capa(vec![String::from("psync2")])),
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, socket, "OK").await;
+        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "OK").await;
 
         // Send PSYNC
         Self::send_cmd(
-            socket,
+            &mut socket,
             &Command::PSync {
                 repl_id: None,
                 repl_offset: None,
@@ -413,32 +405,45 @@ impl RedisRepl {
             .context("Read from client")
             .unwrap();
 
-        Self {
+        let server = Self {
             master_info: MasterInfo::new(),
             store: Arc::new(Mutex::new(RedisStore::new())),
-        }
+        };
+
+        // spawn a watcher to master socket here
+        let mut master_watcher = server.clone();
+        tokio::spawn(async move { master_watcher.watch_master(socket).await });
+
+        server
     }
 
-    pub async fn watch_master(&mut self, socket: &mut TcpStream) {
-        let mut buf = [0u8; 1024];
+    pub async fn watch_master(&mut self, mut socket: TcpStream) {
+        eprintln!("Watching commands from master");
+        let mut recv_buf = [0u8; 1024];
         loop {
             let n = socket
-                .read(&mut buf)
+                .read(&mut recv_buf)
                 .await
                 .context("Read from master")
                 .unwrap();
             let mut ptr = 0;
 
             while ptr < n {
-                let (cmd, remaining_bytes) = Command::from_bytes(&buf[ptr..]);
+                let (cmd, remaining_bytes) = Command::from_bytes(&recv_buf[ptr..]);
                 eprintln!("Received command from master: {:?}", cmd);
-                ptr = buf.len() - remaining_bytes.len();
+                ptr = recv_buf.len() - remaining_bytes.len();
 
                 match cmd {
                     Command::Set { key, value, px } => {
+                        eprintln!("Handling SET propagation from master");
                         let mut store = self.store.lock().await;
                         store.set(&key, &value, &px);
                         drop(store);
+                    }
+                    Command::ReplConf(ReplConfArg::GetAck) => {
+                        eprintln!("Handling REPLCONF GETACK * from master");
+                        let cmd = Command::ReplConf(ReplConfArg::Ack(0));
+                        Self::send_cmd(&mut socket, &cmd).await;
                     }
                     c => panic!("Unexpected command from master: {:?}", c),
                 }

@@ -6,6 +6,14 @@ pub enum InfoArg {
 }
 
 #[derive(Debug)]
+pub enum ReplConfArg {
+    ListeningPort(u16),
+    Capa(Vec<String>),
+    GetAck,
+    Ack(usize),
+}
+
+#[derive(Debug)]
 pub enum Command {
     Ping,
     Echo(Vec<u8>),
@@ -16,10 +24,7 @@ pub enum Command {
     },
     Get(String),
     Info(Option<InfoArg>),
-    ReplConf {
-        listening_port: Option<u16>,
-        capa: Vec<String>,
-    },
+    ReplConf(ReplConfArg),
     PSync {
         repl_id: Option<[char; 40]>,
         repl_offset: Option<usize>,
@@ -57,27 +62,29 @@ impl Command {
                 }
                 vec
             }
-            Command::ReplConf {
-                listening_port,
-                capa,
-            } => {
-                let mut vec = vec![b"REPLCONF".to_vec()];
-                match listening_port {
-                    Some(port) => {
-                        let mut port_arg = vec![
-                            b"listening-port".to_vec(),
-                            port.to_string().as_bytes().to_vec(),
-                        ];
-                        vec.append(&mut port_arg);
-                    }
-                    None => {}
-                };
-                capa.iter().for_each(|c| {
-                    let mut capa_arg = vec![b"capa".to_vec(), c.as_bytes().to_vec()];
-                    vec.append(&mut capa_arg);
-                });
-                vec
-            }
+            Command::ReplConf(arg) => match arg {
+                ReplConfArg::ListeningPort(port) => vec![
+                    b"REPLCONF".to_vec(),
+                    b"listening-port".to_vec(),
+                    port.to_string().as_bytes().to_vec(),
+                ],
+                ReplConfArg::Capa(capas) => {
+                    capas
+                        .iter()
+                        .fold(vec![b"REPLCONF".to_vec()], |mut acc, capa| {
+                            acc.push(b"capa".to_vec());
+                            acc.push(capa.as_bytes().to_vec());
+                            acc
+                        })
+                }
+
+                ReplConfArg::GetAck => todo!(),
+                ReplConfArg::Ack(offset) => vec![
+                    b"REPLCONF".to_vec(),
+                    b"ACK".to_vec(),
+                    offset.to_string().as_bytes().to_vec(),
+                ],
+            },
             Command::PSync {
                 repl_id,
                 repl_offset,
@@ -111,9 +118,8 @@ impl Command {
         let (args, remaining_bytes) = decode_array_of_bulkstrings(bytes);
 
         let (verb, mut remaining) = args.split_first().expect("Command verb must be present");
-        let verb = verb.to_ascii_lowercase();
 
-        let cmd = match &verb[..] {
+        let cmd = match &verb.to_ascii_lowercase()[..] {
             b"ping" => Command::Ping,
             b"echo" => {
                 let (val, _remaning) = remaining.split_first().expect("ECHO argument");
@@ -170,47 +176,65 @@ impl Command {
                 Command::Info(info_arg)
             }
             b"replconf" => {
-                let mut listening_port = None;
-                let mut capa = Vec::new();
+                let (arg, mut _remaining) =
+                    remaining.split_first().expect("First REPLCONF argument");
 
-                loop {
-                    let (arg, mut _remaining) = match remaining.split_first() {
-                        Some((arg, _remaining)) => (arg, _remaining),
-                        None => break,
-                    };
-                    match &arg[..] {
-                        b"listening-port" => {
-                            let (port, __remaining) = _remaining
-                                .split_first()
-                                .expect("Listening port must be present");
-                            let port = std::str::from_utf8(port)
-                                .expect("Valid UTF-8 string for listening port")
-                                .parse::<u16>()
-                                .expect("Valid u16 port number");
-                            listening_port = Some(port);
-                            _remaining = __remaining;
-                        }
-                        b"capa" => {
-                            let (_capa, __remaining) = _remaining
+                let replconf_arg = match &arg.to_ascii_lowercase()[..] {
+                    b"listening-port" => {
+                        let (port, __remaining) = _remaining
+                            .split_first()
+                            .expect("Listening port must be present");
+                        let port = std::str::from_utf8(port)
+                            .expect("Valid UTF-8 string for listening port")
+                            .parse::<u16>()
+                            .expect("Valid u16 port number");
+                        _remaining = __remaining;
+                        ReplConfArg::ListeningPort(port)
+                    }
+                    b"capa" => {
+                        let mut capas = Vec::new();
+                        let (capa, mut __remaining) = _remaining
+                            .split_first()
+                            .expect("Capability argument must be present");
+                        let _capa = std::str::from_utf8(capa)
+                            .expect("Valid UTF-8 string for capability argument")
+                            .to_string();
+                        capas.push(_capa);
+                        _remaining = __remaining;
+
+                        loop {
+                            let (arg, __remaining) = match _remaining.split_first() {
+                                Some(x) => x,
+                                None => {
+                                    break;
+                                }
+                            };
+                            assert_eq!(&arg[..], b"capa");
+                            let (capa, mut __remaining) = __remaining
                                 .split_first()
                                 .expect("Capability argument must be present");
-                            let _capa = std::str::from_utf8(_capa)
+                            let _capa = std::str::from_utf8(capa)
                                 .expect("Valid UTF-8 string for capability argument")
                                 .to_string();
-                            capa.push(_capa);
+                            capas.push(_capa);
                             _remaining = __remaining;
                         }
-                        c => {
-                            panic!("Unknown REPLCONF argument: {:?}", c);
-                        }
-                    };
-                    remaining = _remaining;
-                }
+                        ReplConfArg::Capa(capas)
+                    }
+                    b"getack" => {
+                        let (arg, __remaining) =
+                            _remaining.split_first().expect("REPLCONF GETACK argument");
+                        assert_eq!(&arg[..], b"*");
+                        _remaining = __remaining;
+                        ReplConfArg::GetAck
+                    }
+                    a => {
+                        panic!("Unrecognised REPLCONF argument: {:?}", a);
+                    }
+                };
+                remaining = _remaining;
 
-                Command::ReplConf {
-                    listening_port,
-                    capa,
-                }
+                Command::ReplConf(replconf_arg)
             }
             b"psync" => {
                 let (repl_id, _remaining) = remaining

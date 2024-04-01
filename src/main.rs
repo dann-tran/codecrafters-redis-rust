@@ -26,17 +26,11 @@ async fn main() {
             assert!(remaining.is_empty());
 
             let master_addr = format!("{}:{}", master_host, master_port);
-            let mut master_conn = TcpStream::connect(master_addr)
+            let master_conn = TcpStream::connect(master_addr)
                 .await
                 .context("Connect to master")
                 .unwrap();
-            let server = RedisRepl::new(port, &mut master_conn).await;
-
-            // spawn a watcher to master socket here
-            let mut master_watcher = server.clone();
-            tokio::spawn(async move {
-                master_watcher.watch_master(&mut master_conn).await;
-            });
+            let server = RedisRepl::new(port, master_conn).await;
 
             let listener = TcpListener::bind(&addr)
                 .await
