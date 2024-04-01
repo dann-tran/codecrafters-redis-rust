@@ -2,7 +2,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use anyhow::Context;
 use clap::Parser;
-use redis_starter_rust::server::{RedisMaster, RedisRepl, RedisServerHandler};
+use redis_starter_rust::server::{
+    master::MasterServer, replica::ReplicaServer, RedisServerHandler,
+};
 use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Parser, Debug)]
@@ -30,7 +32,7 @@ async fn main() {
                 .await
                 .context("Connect to master")
                 .unwrap();
-            let server = RedisRepl::new(port, master_conn).await.unwrap();
+            let server = ReplicaServer::new(port, master_conn).await.unwrap();
 
             let listener = TcpListener::bind(&addr)
                 .await
@@ -50,7 +52,7 @@ async fn main() {
             }
         }
         None => {
-            let server = RedisMaster::new();
+            let server = MasterServer::new();
 
             let listener = TcpListener::bind(&addr)
                 .await
