@@ -10,9 +10,9 @@ use super::{MasterInfo, RedisServerGetter, RedisServerHandler, RedisStore};
 
 #[derive(Clone)]
 pub struct MasterServer {
-    pub(crate) master_info: MasterInfo,
-    pub(crate) store: Arc<Mutex<RedisStore>>,
-    pub(crate) repl_conns: Arc<Mutex<Vec<TcpStream>>>,
+    master_info: MasterInfo,
+    store: Arc<Mutex<RedisStore>>,
+    repl_conns: Arc<Mutex<Vec<TcpStream>>>,
 }
 
 impl RedisServerGetter for MasterServer {

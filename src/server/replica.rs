@@ -15,8 +15,9 @@ use super::{MasterInfo, RedisServerGetter, RedisServerHandler, RedisStore};
 
 #[derive(Clone)]
 pub struct ReplicaServer {
-    pub(crate) master_info: MasterInfo,
-    pub(crate) store: Arc<Mutex<RedisStore>>,
+    master_info: MasterInfo,
+    store: Arc<Mutex<RedisStore>>,
+    offset: Arc<Mutex<usize>>,
 }
 
 impl RedisServerGetter for ReplicaServer {
@@ -70,40 +71,6 @@ impl ReplicaServer {
         );
     }
 
-    async fn handle_cmd_from_master(
-        &self,
-        recv_buf: &[u8],
-        n: usize,
-        socket: &mut TcpStream,
-    ) -> anyhow::Result<()> {
-        let mut ptr = 0;
-
-        while ptr < n {
-            let (cmd, remaining_bytes) = Command::from_bytes(&recv_buf[ptr..])?;
-
-            ptr = recv_buf.len() - remaining_bytes.len();
-
-            match cmd {
-                Command::Set { key, value, px } => {
-                    eprintln!("Handling SET propagation from master");
-
-                    let mut store = self.store.lock().await;
-                    store.set(&key, &value, &px);
-                    drop(store);
-                }
-                Command::ReplConf(ReplConfArg::GetAck) => {
-                    eprintln!("Handling REPLCONF GETACK * from master");
-
-                    let cmd = Command::ReplConf(ReplConfArg::Ack(0));
-                    Self::send_cmd(socket, &cmd).await;
-                }
-                c => panic!("Unexpected command from master: {:?}", c),
-            }
-        }
-
-        Ok(())
-    }
-
     fn parse_fullresync(buf: &[u8]) -> anyhow::Result<(MasterInfo, &[u8])> {
         let (val, remaining) = decode(&buf).context("Parse FULLRESYNC response from master")?;
         let text = match val {
@@ -155,6 +122,47 @@ impl ReplicaServer {
         Ok(remaining.split_at(length))
     }
 
+    async fn handle_cmd_from_master(
+        &self,
+        recv_buf: &[u8],
+        n: usize,
+        socket: &mut TcpStream,
+    ) -> anyhow::Result<()> {
+        let mut ptr = 0;
+        while ptr < n {
+            let (cmd, remaining_bytes) = Command::from_bytes(&recv_buf[ptr..])?;
+            let offset_delta = recv_buf.len() - remaining_bytes.len() - ptr;
+            ptr += offset_delta;
+
+            match cmd {
+                Command::Set { key, value, px } => {
+                    eprintln!("Handling SET propagation from master");
+
+                    let mut store = self.store.lock().await;
+                    store.set(&key, &value, &px);
+                    drop(store);
+                }
+                Command::ReplConf(ReplConfArg::GetAck) => {
+                    eprintln!("Handling REPLCONF GETACK * from master");
+
+                    let offset = self.offset.lock().await;
+                    let cmd = Command::ReplConf(ReplConfArg::Ack(*offset));
+                    drop(offset);
+                    Self::send_cmd(socket, &cmd).await;
+                }
+                _ => {
+                    // Ignore all other commands
+                }
+            }
+
+            let mut offset = self.offset.lock().await;
+            *offset += offset_delta;
+            drop(offset);
+        }
+
+        Ok(())
+    }
+
     pub async fn new(port: u16, mut socket: TcpStream) -> anyhow::Result<Self> {
         let mut recv_buf = [0u8; 1024];
 
@@ -199,6 +207,7 @@ impl ReplicaServer {
         let server = Self {
             master_info: master_info,
             store: Arc::new(Mutex::new(RedisStore::new())),
+            offset: Arc::new(Mutex::new(0)),
         };
 
         // Handle additional commands from master, if any
@@ -227,7 +236,9 @@ impl ReplicaServer {
                 .handle_cmd_from_master(&mut recv_buf, n, &mut socket)
                 .await
             {
-                Ok(_) => todo!(),
+                Ok(_) => {
+                    continue;
+                }
                 Err(_) => todo!(), // Read more bytes into buffer
             };
         }
