@@ -30,7 +30,7 @@ async fn main() {
                 .await
                 .context("Connect to master")
                 .unwrap();
-            let server = RedisRepl::new(port, master_conn).await;
+            let server = RedisRepl::new(port, master_conn).await.unwrap();
 
             let listener = TcpListener::bind(&addr)
                 .await
@@ -46,9 +46,7 @@ async fn main() {
                 eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
 
                 let mut server = server.clone();
-                tokio::spawn(async move {
-                    server.handle_conn(socket).await;
-                });
+                tokio::spawn(async move { server.handle_conn(socket).await });
             }
         }
         None => {

@@ -1,3 +1,7 @@
+use anyhow::Context;
+
+use crate::utils::{bytes2usize, split_by_clrf};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RespValue {
     SimpleString(String),
@@ -32,82 +36,74 @@ impl RespValue {
     }
 }
 
-fn split_by_clrf(bytes: &[u8]) -> (Vec<u8>, &[u8]) {
-    let data = bytes
+pub(crate) fn decode(bytes: &[u8]) -> anyhow::Result<(RespValue, &[u8])> {
+    match bytes
         .iter()
-        .take_while(|&&b| b != b'\r')
-        .map(|&b| b)
-        .collect::<Vec<u8>>();
-    if bytes[data.len() + 1] != b'\n' {
-        panic!("Invalid clrf delimiter")
-    }
-    let bytes = &bytes[data.len() + 2..];
-    return (data, bytes);
-}
-
-fn bytes2usize(bytes: &[u8]) -> usize {
-    std::str::from_utf8(bytes)
-        .expect("Valid UTF-8 string from bytes")
-        .parse::<usize>()
-        .expect("Valid number")
-}
-
-pub(crate) fn decode(bytes: &[u8]) -> (RespValue, &[u8]) {
-    match bytes.iter().nth(0).expect("RESP-encoded must not be empty") {
+        .nth(0)
+        .context("RESP-encoded must not be empty")?
+    {
         b'+' => {
             // simple string
-            let (data, bytes) = split_by_clrf(&bytes[1..]);
-            return (
-                RespValue::SimpleString(String::from_utf8(data).expect("Invalid UTF-8 string")),
-                bytes,
-            );
+            let (data, bytes) =
+                split_by_clrf(&bytes[1..]).context("Simple string terminates with CLRF")?;
+            match String::from_utf8(data) {
+                Ok(value) => Ok((RespValue::SimpleString(value), bytes)),
+                Err(_) => Err(anyhow::anyhow!("Expect simple string to be UTF-8 encoded")),
+            }
         }
         b'$' => {
             // bulk string
-            let (length_bytes, bytes) = split_by_clrf(&bytes[1..]);
-            let length = bytes2usize(&length_bytes);
-            let (data, bytes) = split_by_clrf(bytes);
+            let (length_bytes, bytes) = split_by_clrf(&bytes[1..])
+                .context("Bulk string length bytes and data are delimited by CLRF")?;
+            let length = bytes2usize(&length_bytes)?;
+            let (data, bytes) =
+                split_by_clrf(bytes).context("Bulk string data terminates with CLRF")?;
             if data.len() != length {
-                panic!("Inconsistent length")
+                return Err(anyhow::anyhow!("Inconsistent length"));
             }
-            return (RespValue::BulkString(data.into()), bytes);
+            return Ok((RespValue::BulkString(data.into()), bytes));
         }
         b'*' => {
             // list
-            let (vec_length_bytes, bytes) = split_by_clrf(&bytes[1..]);
-            let vec_length = bytes2usize(&vec_length_bytes);
+            let (vec_length_bytes, bytes) =
+                split_by_clrf(&bytes[1..]).context("List length and data are delimited by CLRF")?;
+            let vec_length = bytes2usize(&vec_length_bytes)?;
             let mut values = Vec::with_capacity(vec_length);
             let mut bytes = bytes;
             for _ in 0..vec_length {
-                let (value, _bytes) = decode(bytes);
+                let (value, _bytes) = decode(bytes)?;
                 values.push(value);
                 bytes = _bytes;
             }
-            return (RespValue::Array(values), bytes);
+            return Ok((RespValue::Array(values), bytes));
         }
-        _ => {
-            panic!("Invalid RESP-encoded value: {:?}", bytes)
-        }
+        _ => Err(anyhow::anyhow!("Invalid RESP-encoded value: {:?}", bytes)),
     }
 }
 
-pub(crate) fn decode_array_of_bulkstrings(bytes: &[u8]) -> (Vec<Vec<u8>>, &[u8]) {
-    let (cmd, remaining) = decode(bytes);
+pub(crate) fn decode_array_of_bulkstrings(bytes: &[u8]) -> anyhow::Result<(Vec<Vec<u8>>, &[u8])> {
+    let (cmd, remaining) = decode(bytes)?;
     let values = match cmd {
         RespValue::Array(values) => values,
-        o => panic!("Command must be an array, found {:?}", o),
+        o => return Err(anyhow::anyhow!("Command must be an array, found {:?}", o)),
     };
 
-    let arr = values
-        .iter()
-        .map(|val| match val {
-            RespValue::BulkString(x) => x,
-            o => panic!("Command elements must be bulk strings, found {:?}", o),
-        })
-        .map(|x| x.clone())
-        .collect::<Vec<Vec<u8>>>();
+    let mut arr = Vec::with_capacity(values.len());
+    for val in values {
+        match val {
+            RespValue::BulkString(x) => {
+                arr.push(x);
+            }
+            o => {
+                return Err(anyhow::anyhow!(
+                    "Command elements must be bulk strings, found {:?}",
+                    o
+                ));
+            }
+        }
+    }
 
-    (arr, remaining)
+    Ok((arr, remaining))
 }
 
 #[cfg(test)]
@@ -117,21 +113,21 @@ mod tests {
 
     #[test]
     fn test_decode_simple_string() {
-        let (actual, _) = decode(b"+OK\r\n");
+        let (actual, _) = decode(b"+OK\r\n").unwrap();
         let expected = RespValue::SimpleString(String::from("OK"));
         assert_eq!(actual, expected);
     }
 
     #[test]
     fn test_decode_bulk_string() {
-        let (actual, _) = decode(b"$5\r\nhello\r\n");
+        let (actual, _) = decode(b"$5\r\nhello\r\n").unwrap();
         let expected = RespValue::BulkString(b"hello".into());
         assert_eq!(actual, expected);
     }
 
     #[test]
     fn test_decode_array() {
-        let (actual, _) = decode(b"*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n");
+        let (actual, _) = decode(b"*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n").unwrap();
         let expected = RespValue::Array(vec![
             RespValue::BulkString(b"hello".into()),
             RespValue::BulkString(b"world".into()),

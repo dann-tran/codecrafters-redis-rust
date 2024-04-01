@@ -114,8 +114,8 @@ impl Command {
         RespValue::Array(args).to_bytes()
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> (Self, &[u8]) {
-        let (args, remaining_bytes) = decode_array_of_bulkstrings(bytes);
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<(Self, &[u8])> {
+        let (args, remaining_bytes) = decode_array_of_bulkstrings(bytes)?;
 
         let (verb, mut remaining) = args.split_first().expect("Command verb must be present");
 
@@ -138,7 +138,7 @@ impl Command {
                 let (is_px_present, _remaining) = match _remaining.split_first() {
                     Some((px_key, __remaining)) => match &px_key.to_ascii_lowercase()[..] {
                         b"px" => (true, __remaining),
-                        _ => panic!("Invalid SET arguments"),
+                        arg => return Err(anyhow::anyhow!("Invalid SET argument: {:?}", arg)),
                     },
                     None => (false, _remaining),
                 };
@@ -166,7 +166,7 @@ impl Command {
                         let v = v.to_ascii_lowercase();
                         let v = match &v[..] {
                             b"replication" => InfoArg::Replication,
-                            _ => panic!("Invalid info argument {:?}", v),
+                            _ => return Err(anyhow::anyhow!("Invalid info argument {:?}", v)),
                         };
                         (Some(v), _remaining)
                     }
@@ -229,7 +229,7 @@ impl Command {
                         ReplConfArg::GetAck
                     }
                     a => {
-                        panic!("Unrecognised REPLCONF argument: {:?}", a);
+                        return Err(anyhow::anyhow!("Unrecognised REPLCONF argument: {:?}", a));
                     }
                 };
                 remaining = _remaining;
@@ -272,13 +272,13 @@ impl Command {
                     repl_offset,
                 }
             }
-            _ => panic!("Unknown verb: {:?}", verb),
+            v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
         };
 
         if !remaining.is_empty() {
-            panic!("Unexpected arguments")
+            return Err(anyhow::anyhow!("Unexpected arguments: {:?}", remaining));
         }
 
-        (cmd, remaining_bytes)
+        Ok((cmd, remaining_bytes))
     }
 }

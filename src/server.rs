@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::command::ReplConfArg;
-use crate::resp::RespValue;
+use crate::resp::{decode, RespValue};
+use crate::utils::{bytes2usize, split_by_clrf};
 use crate::{command::Command, utils::get_current_ms};
 use anyhow::Context;
 use async_trait::async_trait;
@@ -56,7 +57,6 @@ impl RedisStore {
     }
 
     fn set(&mut self, key: &String, value: &String, px: &Option<usize>) {
-        eprintln!("Handling SET");
         self.0.insert(
             key.clone(),
             RSValue {
@@ -105,22 +105,24 @@ pub trait RedisServerHandler: RedisServerGetter {
                 .await
                 .context("Read from client")
                 .unwrap();
-            let (cmd, _) = Command::from_bytes(&buf);
+            let (cmd, _) = Command::from_bytes(&buf).unwrap();
 
             match cmd {
                 Command::Ping => {
-                    eprintln!("Handling PING");
+                    eprintln!("Handling PING from client");
                     send_simple_string(&mut socket, "PONG").await;
                 }
                 Command::Echo(val) => {
-                    eprintln!("Handling ECHO");
+                    eprintln!("Handling ECHO from client");
                     send_bulk_string(&mut socket, &val).await;
                 }
                 Command::Set { key, value, px } => {
-                    self.handle_set(&mut socket, &key, &value, &px).await
+                    eprintln!("Handling SET from client");
+
+                    self.handle_set(&mut socket, &key, &value, &px).await;
                 }
                 Command::Get(key) => {
-                    eprintln!("Handling GET");
+                    eprintln!("Handling GET from client");
 
                     let mut store = self.get_store().lock().await;
                     let value = store.get(&key);
@@ -139,7 +141,7 @@ pub trait RedisServerHandler: RedisServerGetter {
                         .unwrap();
                 }
                 Command::Info(_) => {
-                    eprintln!("Handling INFO");
+                    eprintln!("Handling INFO from client");
 
                     let mut info_map = HashMap::<Vec<u8>, Vec<u8>>::new();
                     info_map.insert(b"role".to_vec(), self.get_role().as_bytes().to_vec());
@@ -177,11 +179,17 @@ pub trait RedisServerHandler: RedisServerGetter {
                         .context("Send INFO response")
                         .unwrap();
                 }
-                Command::ReplConf(_) => self.handle_replconf(&mut socket).await,
+                Command::ReplConf(_) => {
+                    eprintln!("Handling REPLCONF from client");
+
+                    self.handle_replconf(&mut socket).await;
+                }
                 Command::PSync {
                     repl_id: _,
                     repl_offset: _,
                 } => {
+                    eprintln!("Handling PSYNC from client");
+
                     self.handle_psync(socket).await;
                     break;
                 }
@@ -244,7 +252,7 @@ impl RedisServerHandler for RedisMaster {
         store.set(key, value, px);
         drop(store);
 
-        eprintln!("Propagate SET commands to slaves");
+        eprintln!("Propagate SET command to slaves");
         let cmd = Command::Set {
             key: key.clone(),
             value: value.clone(),
@@ -253,11 +261,11 @@ impl RedisServerHandler for RedisMaster {
         let buf = cmd.to_bytes();
         let mut repl_conns = self.repl_conns.lock().await;
         for conn in repl_conns.iter_mut() {
-            eprintln!("Propagate to {}", conn.peer_addr().unwrap());
             conn.write_all(&buf)
                 .await
                 .context("Propagate SET to slave")
                 .unwrap();
+            eprintln!("Propagated to {}", conn.peer_addr().unwrap());
         }
         drop(repl_conns);
 
@@ -265,12 +273,11 @@ impl RedisServerHandler for RedisMaster {
     }
 
     async fn handle_replconf(&self, socket: &mut TcpStream) {
-        eprintln!("Handling REPLCONF");
         send_simple_string(socket, "OK").await;
     }
 
     async fn handle_psync(&self, mut socket: TcpStream) {
-        eprintln!("Handling PSYNC");
+        eprintln!("Handling PSYNC from client");
 
         // FULLRESYNC <REPL_ID> 0
         let res = vec![
@@ -337,7 +344,6 @@ impl RedisServerHandler for RedisRepl {
         value: &String,
         px: &Option<usize>,
     ) {
-        eprintln!("Handle SET");
         let mut store = self.store.lock().await;
         store.set(key, value, px);
         drop(store);
@@ -366,7 +372,92 @@ impl RedisRepl {
         );
     }
 
-    pub async fn new(port: u16, mut socket: TcpStream) -> Self {
+    async fn handle_cmd_from_master(
+        &self,
+        recv_buf: &[u8],
+        n: usize,
+        socket: &mut TcpStream,
+    ) -> anyhow::Result<()> {
+        let mut ptr = 0;
+
+        while ptr < n {
+            let (cmd, remaining_bytes) = Command::from_bytes(&recv_buf[ptr..])?;
+
+            ptr = recv_buf.len() - remaining_bytes.len();
+
+            match cmd {
+                Command::Set { key, value, px } => {
+                    eprintln!("Handling SET propagation from master");
+
+                    let mut store = self.store.lock().await;
+                    store.set(&key, &value, &px);
+                    drop(store);
+                }
+                Command::ReplConf(ReplConfArg::GetAck) => {
+                    eprintln!("Handling REPLCONF GETACK * from master");
+
+                    let cmd = Command::ReplConf(ReplConfArg::Ack(0));
+                    Self::send_cmd(socket, &cmd).await;
+                }
+                c => panic!("Unexpected command from master: {:?}", c),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_fullresync(buf: &[u8]) -> anyhow::Result<(MasterInfo, &[u8])> {
+        let (val, remaining) = decode(&buf).context("Parse FULLRESYNC response from master")?;
+        let text = match val {
+            RespValue::SimpleString(x) => x,
+            o => return Err(anyhow::anyhow!("Unexpected value: {:?}", o)),
+        };
+
+        let args = text.split(" ").collect::<Vec<&str>>();
+
+        let (arg, args) = args.split_first().context("Extract FULLRESYNC verb")?;
+        if arg.to_ascii_lowercase() != "fullresync" {
+            return Err(anyhow::anyhow!("Command is not FULLRESYNC but: {}", arg));
+        }
+
+        let (repl_id, args) = args.split_first().context("Extract REPL_ID")?;
+        let repl_id: [char; 40] = match repl_id.chars().collect::<Vec<char>>().try_into() {
+            Ok(x) => x,
+            Err(_) => return Err(anyhow::anyhow!("Replication ID must be 40 chars long")),
+        };
+
+        let (repl_offset, args) = args.split_first().context("Extract replication offset")?;
+        let repl_offset = repl_offset
+            .parse::<usize>()
+            .context("Parse replication offset to usize")?;
+
+        assert!(args.is_empty());
+
+        Ok((
+            MasterInfo {
+                repl_id,
+                repl_offset,
+            },
+            remaining,
+        ))
+    }
+
+    fn parse_rdb(buf: &[u8]) -> anyhow::Result<(&[u8], &[u8])> {
+        // $<length>\r\n<contents>
+        if !buf.starts_with(b"$") {
+            return Err(anyhow::anyhow!(
+                "Expect RDB to start with '$', found: {:?}",
+                buf
+            ));
+        }
+
+        let (length, remaining) = split_by_clrf(&buf[1..]).context("Extract length bytes")?;
+        let length = bytes2usize(&length)?;
+
+        Ok(remaining.split_at(length))
+    }
+
+    pub async fn new(port: u16, mut socket: TcpStream) -> anyhow::Result<Self> {
         let mut recv_buf = [0u8; 1024];
 
         // Send PING
@@ -398,27 +489,34 @@ impl RedisRepl {
             },
         )
         .await;
-        // receive FULLRESYNC <REPL_ID> 0
-        socket
+        // receive FULLRESYNC <REPL_ID> 0 & RDB file
+        let n = socket
             .read(&mut recv_buf)
             .await
-            .context("Read from client")
+            .context("Read from master")
             .unwrap();
+        let (master_info, remaining) = Self::parse_fullresync(&recv_buf)?;
+        let (_, remaining) = Self::parse_rdb(&remaining)?;
 
         let server = Self {
-            master_info: MasterInfo::new(),
+            master_info: master_info,
             store: Arc::new(Mutex::new(RedisStore::new())),
         };
+
+        // Handle additional commands from master, if any
+        let ptr = recv_buf.len() - remaining.len();
+        server
+            .handle_cmd_from_master(&remaining, n - ptr, &mut socket)
+            .await?;
 
         // spawn a watcher to master socket here
         let mut master_watcher = server.clone();
         tokio::spawn(async move { master_watcher.watch_master(socket).await });
 
-        server
+        Ok(server)
     }
 
     pub async fn watch_master(&mut self, mut socket: TcpStream) {
-        eprintln!("Watching commands from master");
         let mut recv_buf = [0u8; 1024];
         loop {
             let n = socket
@@ -426,28 +524,14 @@ impl RedisRepl {
                 .await
                 .context("Read from master")
                 .unwrap();
-            let mut ptr = 0;
 
-            while ptr < n {
-                let (cmd, remaining_bytes) = Command::from_bytes(&recv_buf[ptr..]);
-                eprintln!("Received command from master: {:?}", cmd);
-                ptr = recv_buf.len() - remaining_bytes.len();
-
-                match cmd {
-                    Command::Set { key, value, px } => {
-                        eprintln!("Handling SET propagation from master");
-                        let mut store = self.store.lock().await;
-                        store.set(&key, &value, &px);
-                        drop(store);
-                    }
-                    Command::ReplConf(ReplConfArg::GetAck) => {
-                        eprintln!("Handling REPLCONF GETACK * from master");
-                        let cmd = Command::ReplConf(ReplConfArg::Ack(0));
-                        Self::send_cmd(&mut socket, &cmd).await;
-                    }
-                    c => panic!("Unexpected command from master: {:?}", c),
-                }
-            }
+            match self
+                .handle_cmd_from_master(&mut recv_buf, n, &mut socket)
+                .await
+            {
+                Ok(_) => todo!(),
+                Err(_) => todo!(), // Read more bytes into buffer
+            };
         }
     }
 }
