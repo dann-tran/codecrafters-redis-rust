@@ -8,6 +8,7 @@ pub(crate) enum RespValue {
     BulkString(Vec<u8>),
     Array(Vec<RespValue>),
     NullBulkString,
+    Integer(i64),
 }
 
 impl RespValue {
@@ -32,6 +33,7 @@ impl RespValue {
                 bytes
             }
             RespValue::NullBulkString => b"$-1\r\n".into(),
+            RespValue::Integer(i) => format!(":{}\r\n", i).into_bytes(),
         }
     }
 }
@@ -76,6 +78,16 @@ pub(crate) fn decode(bytes: &[u8]) -> anyhow::Result<(RespValue, &[u8])> {
                 bytes = _bytes;
             }
             return Ok((RespValue::Array(values), bytes));
+        }
+        b':' => {
+            // integer
+            let (value, bytes) =
+                split_by_clrf(&bytes[1..]).context("Extract integer by CLRF terminal")?;
+            let value = std::str::from_utf8(&value)
+                .context("UTF-8 decode bytes for integer string")?
+                .parse::<i64>()
+                .context("Parse integer string")?;
+            return Ok((RespValue::Integer(value), bytes));
         }
         _ => Err(anyhow::anyhow!("Invalid RESP-encoded value: {:?}", bytes)),
     }

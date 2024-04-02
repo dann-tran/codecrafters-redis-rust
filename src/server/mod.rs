@@ -1,14 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use crate::resp::RespValue;
 use crate::{command::Command, utils::get_current_ms};
 use anyhow::Context;
 use async_trait::async_trait;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-    sync::Mutex,
-};
+use tokio::io::AsyncReadExt;
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub mod master;
 pub mod replica;
@@ -72,149 +69,85 @@ impl RedisStore {
     }
 }
 
-pub trait RedisServerGetter {
-    fn get_store(&self) -> &Arc<Mutex<RedisStore>>;
-    fn get_role(&self) -> String;
-    fn get_master_info(&self) -> &MasterInfo;
+async fn send_resp(socket: &mut TcpStream, value: &RespValue) {
+    let buf = value.to_bytes();
+    socket
+        .write_all(&buf)
+        .await
+        .context(format!("Send {:?}", &value))
+        .unwrap();
 }
 
 async fn send_simple_string(socket: &mut TcpStream, res: &str) {
-    let buf = RespValue::SimpleString(res.into()).to_bytes();
-    socket
-        .write_all(&buf)
-        .await
-        .context(format!("Send {}", res))
-        .unwrap();
+    send_resp(socket, &RespValue::SimpleString(res.into())).await;
 }
 
 async fn send_bulk_string(socket: &mut TcpStream, res: &[u8]) {
-    let buf = RespValue::BulkString(res.into()).to_bytes();
+    send_resp(socket, &RespValue::BulkString(res.into())).await;
+}
+
+async fn send_integer(socket: &mut TcpStream, res: i64) {
+    send_resp(socket, &RespValue::Integer(res)).await;
+}
+
+async fn send_cmd(socket: &mut TcpStream, cmd: &Command) {
+    let send_buf = cmd.to_bytes();
     socket
-        .write_all(&buf)
+        .write_all(&send_buf)
         .await
-        .context(format!("Send {:?}", res))
+        .context(format!("Send {:?}", cmd))
         .unwrap();
 }
 
-#[async_trait]
-pub trait RedisServerHandler: RedisServerGetter {
-    async fn handle_conn(&mut self, mut socket: TcpStream) {
-        let mut buf = [0u8; 1024];
-        loop {
-            socket
-                .read(&mut buf)
-                .await
-                .context("Read from client")
-                .unwrap();
-            let (cmd, _) = Command::from_bytes(&buf).unwrap();
-
-            match cmd {
-                Command::Ping => {
-                    eprintln!("Handling PING from client");
-                    send_simple_string(&mut socket, "PONG").await;
-                }
-                Command::Echo(val) => {
-                    eprintln!("Handling ECHO from client");
-                    send_bulk_string(&mut socket, &val).await;
-                }
-                Command::Set { key, value, px } => {
-                    eprintln!("Handling SET from client");
-
-                    self.handle_set(&mut socket, &key, &value, &px).await;
-                }
-                Command::Get(key) => {
-                    eprintln!("Handling GET from client");
-
-                    let mut store = self.get_store().lock().await;
-                    let value = store.get(&key);
-                    drop(store);
-
-                    let res = match value {
-                        Some(x) => RespValue::BulkString(x.as_bytes().to_vec()),
-                        None => RespValue::NullBulkString,
-                    };
-                    let buf = res.to_bytes();
-
-                    socket
-                        .write_all(&buf)
-                        .await
-                        .context("Send GET response")
-                        .unwrap();
-                }
-                Command::Info(_) => {
-                    eprintln!("Handling INFO from client");
-
-                    let mut info_map = HashMap::<Vec<u8>, Vec<u8>>::new();
-                    info_map.insert(b"role".to_vec(), self.get_role().as_bytes().to_vec());
-
-                    let master_info = self.get_master_info();
-                    info_map.insert(
-                        b"master_replid".to_vec(),
-                        master_info
-                            .repl_id
-                            .iter()
-                            .collect::<String>()
-                            .as_bytes()
-                            .to_vec(),
-                    );
-                    info_map.insert(
-                        b"master_repl_offset".to_vec(),
-                        master_info.repl_offset.to_string().into(),
-                    );
-                    let lines = info_map.iter().fold(Vec::new(), |mut acc, (k, v)| {
-                        if !acc.is_empty() {
-                            acc.push(b'\n');
-                        }
-                        acc.extend(k);
-                        acc.push(b':');
-                        acc.extend(v);
-                        acc
-                    });
-
-                    let res = RespValue::BulkString(lines);
-                    let buf = res.to_bytes();
-
-                    socket
-                        .write_all(&buf)
-                        .await
-                        .context("Send INFO response")
-                        .unwrap();
-                }
-                Command::ReplConf(_) => {
-                    eprintln!("Handling REPLCONF from client");
-
-                    self.handle_replconf(&mut socket).await;
-                }
-                Command::PSync {
-                    repl_id: _,
-                    repl_offset: _,
-                } => {
-                    eprintln!("Handling PSYNC from client");
-
-                    self.handle_psync(socket).await;
-                    break;
-                }
-            }
-        }
-    }
-
-    async fn send_cmd(socket: &mut TcpStream, cmd: &Command) {
-        let send_buf = cmd.to_bytes();
-        socket
-            .write_all(&send_buf)
-            .await
-            .context(format!("Send {:?}", cmd))
-            .unwrap();
-    }
-
-    async fn handle_set(
-        &self,
-        socket: &mut TcpStream,
-        key: &String,
-        value: &String,
-        px: &Option<usize>,
+async fn assert_recv_simple_string(buf: &mut [u8], socket: &mut TcpStream, expected: &str) {
+    socket.read(buf).await.context("Read from client").unwrap();
+    let expected_encoded = &RespValue::SimpleString(expected.to_string()).to_bytes();
+    assert!(
+        buf.starts_with(expected_encoded),
+        "Expected: {:?}; Found: {:?}",
+        expected_encoded,
+        &buf[..expected_encoded.len()]
     );
+}
 
-    async fn handle_replconf(&self, socket: &mut TcpStream);
-    async fn handle_psync(&self, socket: TcpStream);
+#[async_trait]
+pub trait RedisServerHandler {
+    async fn handle_conn(&mut self, mut socket: TcpStream);
+}
+
+async fn handle_info(socket: &mut TcpStream, role: &str, master_info: &MasterInfo) {
+    let mut info_map = HashMap::<Vec<u8>, Vec<u8>>::new();
+    info_map.insert(b"role".to_vec(), role.as_bytes().to_vec());
+
+    info_map.insert(
+        b"master_replid".to_vec(),
+        master_info
+            .repl_id
+            .iter()
+            .collect::<String>()
+            .as_bytes()
+            .to_vec(),
+    );
+    info_map.insert(
+        b"master_repl_offset".to_vec(),
+        master_info.repl_offset.to_string().into(),
+    );
+    let lines = info_map.iter().fold(Vec::new(), |mut acc, (k, v)| {
+        if !acc.is_empty() {
+            acc.push(b'\n');
+        }
+        acc.extend(k);
+        acc.push(b':');
+        acc.extend(v);
+        acc
+    });
+
+    let res = RespValue::BulkString(lines);
+    let buf = res.to_bytes();
+
+    socket
+        .write_all(&buf)
+        .await
+        .context("Send INFO response")
+        .unwrap();
 }

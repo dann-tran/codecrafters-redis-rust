@@ -2,16 +2,20 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tokio::{io::AsyncReadExt, net::TcpStream, sync::Mutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::Mutex,
+};
 
 use crate::{
     command::{Command, ReplConfArg},
     resp::{decode, RespValue},
-    server::send_simple_string,
+    server::{handle_info, send_bulk_string, send_cmd, send_simple_string},
     utils::{bytes2usize, split_by_clrf},
 };
 
-use super::{MasterInfo, RedisServerGetter, RedisServerHandler, RedisStore};
+use super::{assert_recv_simple_string, MasterInfo, RedisServerHandler, RedisStore};
 
 #[derive(Clone)]
 pub struct ReplicaServer {
@@ -20,57 +24,71 @@ pub struct ReplicaServer {
     offset: Arc<Mutex<usize>>,
 }
 
-impl RedisServerGetter for ReplicaServer {
-    fn get_store(&self) -> &Arc<Mutex<RedisStore>> {
-        &self.store
-    }
-
-    fn get_role(&self) -> String {
-        "slave".to_string()
-    }
-
-    fn get_master_info(&self) -> &MasterInfo {
-        &self.master_info
-    }
-}
-
 #[async_trait]
 impl RedisServerHandler for ReplicaServer {
-    async fn handle_set(
-        &self,
-        socket: &mut TcpStream,
-        key: &String,
-        value: &String,
-        px: &Option<usize>,
-    ) {
-        let mut store = self.store.lock().await;
-        store.set(key, value, px);
-        drop(store);
+    async fn handle_conn(&mut self, mut socket: TcpStream) {
+        let mut buf = [0u8; 1024];
+        loop {
+            socket
+                .read(&mut buf)
+                .await
+                .context("Read from client")
+                .unwrap();
+            let (cmd, _) = Command::from_bytes(&buf).unwrap();
 
-        send_simple_string(socket, "OK").await;
-    }
+            match cmd {
+                Command::Ping => {
+                    eprintln!("Handling PING from client");
+                    send_simple_string(&mut socket, "PONG").await;
+                }
+                Command::Echo(val) => {
+                    eprintln!("Handling ECHO from client");
+                    send_bulk_string(&mut socket, &val).await;
+                }
+                Command::Set { key, value, px } => {
+                    let mut store = self.store.lock().await;
+                    store.set(&key, &value, &px);
+                    drop(store);
 
-    async fn handle_replconf(&self, _socket: &mut TcpStream) {
-        panic!("Replication server does not expect REPLCONF command from client");
-    }
+                    send_simple_string(&mut socket, "OK").await;
+                }
+                Command::Get(key) => {
+                    eprintln!("Handling GET from client");
 
-    async fn handle_psync(&self, _socket: TcpStream) {
-        panic!("Replication server does not expect PSYNC command");
+                    let mut store = self.store.lock().await;
+                    let value = store.get(&key);
+                    drop(store);
+
+                    let res = match value {
+                        Some(x) => RespValue::BulkString(x.as_bytes().to_vec()),
+                        None => RespValue::NullBulkString,
+                    };
+                    let buf = res.to_bytes();
+
+                    socket
+                        .write_all(&buf)
+                        .await
+                        .context("Send GET response")
+                        .unwrap();
+                }
+                Command::Info(_) => {
+                    eprintln!("Handling INFO from client");
+                    handle_info(&mut socket, "slave", &self.master_info).await;
+                }
+                Command::ReplConf(_) => {
+                    eprintln!("Handling REPLCONF from client");
+
+                    send_simple_string(&mut socket, "OK").await;
+                }
+                c => {
+                    panic!("Unsupported command: {:?}", c);
+                }
+            }
+        }
     }
 }
 
 impl ReplicaServer {
-    async fn assert_recv_simple_string(buf: &mut [u8], socket: &mut TcpStream, expected: &str) {
-        socket.read(buf).await.context("Read from client").unwrap();
-        let expected_encoded = &RespValue::SimpleString(expected.to_string()).to_bytes();
-        assert!(
-            buf.starts_with(expected_encoded),
-            "Expected: {:?}; Found: {:?}",
-            expected_encoded,
-            &buf[..expected_encoded.len()]
-        );
-    }
-
     fn parse_fullresync(buf: &[u8]) -> anyhow::Result<(MasterInfo, &[u8])> {
         let (val, remaining) = decode(&buf).context("Parse FULLRESYNC response from master")?;
         let text = match val {
@@ -148,7 +166,7 @@ impl ReplicaServer {
                     let offset = self.offset.lock().await;
                     let cmd = Command::ReplConf(ReplConfArg::Ack(*offset));
                     drop(offset);
-                    Self::send_cmd(socket, &cmd).await;
+                    send_cmd(socket, &cmd).await;
                 }
                 _ => {
                     // Ignore all other commands
@@ -167,27 +185,27 @@ impl ReplicaServer {
         let mut recv_buf = [0u8; 1024];
 
         // Send PING
-        Self::send_cmd(&mut socket, &Command::Ping).await;
-        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "PONG").await;
+        send_cmd(&mut socket, &Command::Ping).await;
+        assert_recv_simple_string(&mut recv_buf, &mut socket, "PONG").await;
 
         // Send REPLCONF listening-port
-        Self::send_cmd(
+        send_cmd(
             &mut socket,
             &Command::ReplConf(ReplConfArg::ListeningPort(port)),
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "OK").await;
+        assert_recv_simple_string(&mut recv_buf, &mut socket, "OK").await;
 
         // Send REPLCONF capa
-        Self::send_cmd(
+        send_cmd(
             &mut socket,
             &Command::ReplConf(ReplConfArg::Capa(vec![String::from("psync2")])),
         )
         .await;
-        Self::assert_recv_simple_string(&mut recv_buf, &mut socket, "OK").await;
+        assert_recv_simple_string(&mut recv_buf, &mut socket, "OK").await;
 
         // Send PSYNC
-        Self::send_cmd(
+        send_cmd(
             &mut socket,
             &Command::PSync {
                 repl_id: None,

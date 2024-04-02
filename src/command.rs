@@ -1,3 +1,5 @@
+use anyhow::Context;
+
 use crate::resp::{decode_array_of_bulkstrings, RespValue};
 
 #[derive(Debug)]
@@ -28,6 +30,10 @@ pub enum Command {
     PSync {
         repl_id: Option<[char; 40]>,
         repl_offset: Option<usize>,
+    },
+    Wait {
+        repl_num: usize,
+        sec_num: u64,
     },
 }
 
@@ -106,6 +112,10 @@ impl Command {
 
                 vec
             }
+            Command::Wait {
+                repl_num: _,
+                sec_num: _,
+            } => todo!(),
         };
         let args = args
             .iter()
@@ -271,6 +281,27 @@ impl Command {
                     repl_id,
                     repl_offset,
                 }
+            }
+            b"wait" => {
+                let (repl_num, _remaining) = remaining
+                    .split_first()
+                    .context("Retrieve number of replicas")?;
+                let repl_num = std::str::from_utf8(repl_num)
+                    .context("Parse replica number using UTF-8 encoding")?
+                    .parse::<usize>()
+                    .context("Parse replica number from string")?;
+
+                let (sec_num, _remaining) = _remaining
+                    .split_first()
+                    .context("Retrieve number of seconds")?;
+                let sec_num = std::str::from_utf8(sec_num)
+                    .context("Parse number of seconds using UTF-8 encoding")?
+                    .parse::<u64>()
+                    .context("Parse number of seconds from string")?;
+
+                remaining = _remaining;
+
+                Command::Wait { repl_num, sec_num }
             }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
         };
