@@ -135,7 +135,10 @@ impl RedisServerHandler for MasterServer {
                     sec_num: _,
                 } => {
                     eprintln!("Handling WAIT from client");
-                    send_integer(&mut socket, 0).await;
+                    let repl_conns = self.repl_conns.lock().await;
+                    let repl_num = repl_conns.len();
+                    drop(repl_conns);
+                    send_integer(&mut socket, repl_num as i64).await;
                 }
             };
             var_name
