@@ -1,13 +1,15 @@
+use std::time::Duration;
+
 use anyhow::Context;
 
 use crate::resp::{decode_array_of_bulkstrings, RespValue};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InfoArg {
     Replication,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ReplConfArg {
     ListeningPort(u16),
     Capa(Vec<String>),
@@ -15,7 +17,7 @@ pub enum ReplConfArg {
     Ack(usize),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Command {
     Ping,
     Echo(Vec<u8>),
@@ -32,8 +34,8 @@ pub enum Command {
         repl_offset: Option<usize>,
     },
     Wait {
-        repl_num: usize,
-        sec_num: u64,
+        repl_ack_num: usize,
+        timeout_dur: Duration,
     },
 }
 
@@ -83,8 +85,9 @@ impl Command {
                             acc
                         })
                 }
-
-                ReplConfArg::GetAck => todo!(),
+                ReplConfArg::GetAck => {
+                    vec![b"REPLCONF".to_vec(), b"GETACK".to_vec(), b"*".to_vec()]
+                }
                 ReplConfArg::Ack(offset) => vec![
                     b"REPLCONF".to_vec(),
                     b"ACK".to_vec(),
@@ -113,8 +116,8 @@ impl Command {
                 vec
             }
             Command::Wait {
-                repl_num: _,
-                sec_num: _,
+                repl_ack_num: _,
+                timeout_dur: _,
             } => todo!(),
         };
         let args = args
@@ -238,6 +241,16 @@ impl Command {
                         _remaining = __remaining;
                         ReplConfArg::GetAck
                     }
+                    b"ack" => {
+                        let (arg, __remaining) =
+                            _remaining.split_first().expect("REPLCONF ACK offset");
+                        let offset = std::str::from_utf8(arg)
+                            .expect("Valid UTF-8 for offset number")
+                            .parse::<usize>()
+                            .expect("Valid offset number");
+                        _remaining = __remaining;
+                        ReplConfArg::Ack(offset)
+                    }
                     a => {
                         return Err(anyhow::anyhow!("Unrecognised REPLCONF argument: {:?}", a));
                     }
@@ -294,14 +307,17 @@ impl Command {
                 let (sec_num, _remaining) = _remaining
                     .split_first()
                     .context("Retrieve number of seconds")?;
-                let sec_num = std::str::from_utf8(sec_num)
+                let timeout_dur = std::str::from_utf8(sec_num)
                     .context("Parse number of seconds using UTF-8 encoding")?
                     .parse::<u64>()
                     .context("Parse number of seconds from string")?;
 
                 remaining = _remaining;
 
-                Command::Wait { repl_num, sec_num }
+                Command::Wait {
+                    repl_ack_num: repl_num,
+                    timeout_dur: Duration::from_millis(timeout_dur),
+                }
             }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
         };

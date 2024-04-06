@@ -143,11 +143,11 @@ impl ReplicaServer {
     async fn handle_cmd_from_master(
         &self,
         recv_buf: &[u8],
-        n: usize,
+        buf_len: usize,
         socket: &mut TcpStream,
     ) -> anyhow::Result<()> {
         let mut ptr = 0;
-        while ptr < n {
+        while ptr < buf_len {
             let (cmd, remaining_bytes) = Command::from_bytes(&recv_buf[ptr..])?;
             let offset_delta = recv_buf.len() - remaining_bytes.len() - ptr;
             ptr += offset_delta;
@@ -214,12 +214,21 @@ impl ReplicaServer {
         )
         .await;
         // receive FULLRESYNC <REPL_ID> 0 & RDB file
-        let n = socket
+        let mut n = socket
             .read(&mut recv_buf)
             .await
             .context("Read from master")
             .unwrap();
-        let (master_info, remaining) = Self::parse_fullresync(&recv_buf)?;
+        let (master_info, mut remaining) = Self::parse_fullresync(&recv_buf)?;
+        if recv_buf.len() - remaining.len() >= n {
+            let _n = socket
+                .read(&mut recv_buf)
+                .await
+                .context("Read from master")
+                .unwrap();
+            remaining = &recv_buf[..];
+            n = _n;
+        }
         let (_, remaining) = Self::parse_rdb(&remaining)?;
 
         let server = Self {

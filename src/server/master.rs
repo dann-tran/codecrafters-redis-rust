@@ -6,21 +6,23 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::Mutex,
+    task::JoinSet,
+    time,
 };
 
 use crate::{
-    command::Command,
+    command::{Command, ReplConfArg},
     resp::RespValue,
-    server::{handle_info, send_bulk_string, send_integer, send_simple_string},
+    server::{handle_info, send_bulk_string, send_cmd, send_integer, send_simple_string},
 };
 
 use super::{MasterInfo, RedisServerHandler, RedisStore};
 
 #[derive(Clone)]
 pub struct MasterServer {
-    master_info: MasterInfo,
+    master_info: Arc<Mutex<MasterInfo>>,
     store: Arc<Mutex<RedisStore>>,
-    repl_conns: Arc<Mutex<Vec<TcpStream>>>,
+    repl_conns: Arc<Mutex<Vec<Arc<Mutex<TcpStream>>>>>,
 }
 
 #[async_trait]
@@ -57,16 +59,18 @@ impl RedisServerHandler for MasterServer {
                         value: value.clone(),
                         px: px.clone(),
                     };
-                    let buf = cmd.to_bytes();
-                    let mut repl_conns = self.repl_conns.lock().await;
-                    for conn in repl_conns.iter_mut() {
-                        conn.write_all(&buf)
-                            .await
-                            .context("Propagate SET to slave")
-                            .unwrap();
+
+                    let mut master_info = self.master_info.lock().await;
+                    master_info.repl_offset += cmd.to_bytes().len();
+                    drop(master_info);
+
+                    let replicas = self.repl_conns.lock().await;
+                    for replica in replicas.iter() {
+                        let mut conn = replica.lock().await;
+                        send_cmd(&mut conn, &cmd).await;
                         eprintln!("Propagated to {}", conn.peer_addr().unwrap());
                     }
-                    drop(repl_conns);
+                    drop(replicas);
 
                     send_simple_string(&mut socket, "OK").await;
                 }
@@ -91,7 +95,12 @@ impl RedisServerHandler for MasterServer {
                 }
                 Command::Info(_) => {
                     eprintln!("Handling INFO from client");
-                    handle_info(&mut socket, "master", &self.master_info).await;
+                    handle_info(
+                        &mut socket,
+                        "master",
+                        &self.master_info.lock().await.clone(),
+                    )
+                    .await;
                 }
                 Command::ReplConf(_) => {
                     eprintln!("Handling REPLCONF from client");
@@ -105,12 +114,11 @@ impl RedisServerHandler for MasterServer {
                     eprintln!("Handling PSYNC from client");
 
                     // FULLRESYNC <REPL_ID> 0
-                    let res = vec![
-                        "FULLRESYNC",
-                        &self.master_info.repl_id.iter().collect::<String>(),
-                        "0",
-                    ]
-                    .join(" ");
+                    let master_info = self.master_info.lock().await;
+                    let repl_id = master_info.repl_id;
+                    drop(master_info);
+                    let res =
+                        vec!["FULLRESYNC", &repl_id.iter().collect::<String>(), "0"].join(" ");
                     send_simple_string(&mut socket, &res).await;
 
                     let empty_rdb = hex::decode("524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2").expect("Valid HEX string");
@@ -125,20 +133,84 @@ impl RedisServerHandler for MasterServer {
                         .unwrap();
 
                     let mut repl_conns = self.repl_conns.lock().await;
-                    repl_conns.push(socket);
+                    repl_conns.push(Arc::new(Mutex::new(socket)));
                     drop(repl_conns);
 
                     break;
                 }
                 Command::Wait {
-                    repl_num: _,
-                    sec_num: _,
+                    repl_ack_num,
+                    timeout_dur,
                 } => {
                     eprintln!("Handling WAIT from client");
-                    let repl_conns = self.repl_conns.lock().await;
-                    let repl_num = repl_conns.len();
-                    drop(repl_conns);
-                    send_integer(&mut socket, repl_num as i64).await;
+
+                    let master_info = self.master_info.lock().await;
+                    let master_repl_offset = master_info.repl_offset;
+                    drop(master_info);
+                    eprintln!("Master repl offset: {}", master_repl_offset);
+
+                    let res_value = if master_repl_offset == 0 {
+                        let replicas = self.repl_conns.lock().await;
+                        let replica_num = replicas.len();
+                        drop(replicas);
+                        replica_num
+                    } else {
+                        let mut ack_num = 0usize;
+                        let getack_cmd = Command::ReplConf(ReplConfArg::GetAck);
+
+                        let getacks = async {
+                            let mut join_set = JoinSet::new();
+
+                            let repl_conns = self.repl_conns.lock().await;
+                            for conn in repl_conns.iter() {
+                                let conn = conn.clone();
+                                let cmd = getack_cmd.clone();
+
+                                join_set.spawn(async move {
+                                    let mut conn = conn.lock().await;
+                                    let peer_addr = conn.peer_addr().unwrap();
+                                    // Send GETACK to replica
+                                    eprintln!("Send GETACK to replica at {:?}", peer_addr);
+                                    send_cmd(&mut conn, &cmd).await;
+
+                                    // Read ACK from replica
+                                    let mut buf = [0u8; 1024];
+                                    conn.read(&mut buf)
+                                        .await
+                                        .context("Read from replica")
+                                        .unwrap();
+                                    drop(conn);
+
+                                    let (cmd, _) = Command::from_bytes(&buf).unwrap();
+                                    eprintln!(
+                                        "Received from replica {:?} command: {:?}",
+                                        peer_addr, cmd
+                                    );
+
+                                    if let Command::ReplConf(ReplConfArg::Ack(_)) = cmd {
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                });
+                            }
+                            drop(repl_conns);
+
+                            while ack_num < repl_ack_num && !join_set.is_empty() {
+                                if let Ok(ack) =
+                                    join_set.join_next().await.expect("Join set is not empty")
+                                {
+                                    if ack {
+                                        ack_num += 1;
+                                    }
+                                }
+                            }
+                        };
+                        let _ = time::timeout(timeout_dur, getacks).await;
+                        ack_num
+                    };
+
+                    send_integer(&mut socket, res_value as i64).await;
                 }
             };
             var_name
@@ -149,7 +221,7 @@ impl RedisServerHandler for MasterServer {
 impl MasterServer {
     pub fn new() -> Self {
         Self {
-            master_info: MasterInfo::new(),
+            master_info: Arc::new(Mutex::new(MasterInfo::new())),
             store: Arc::new(Mutex::new(RedisStore::new())),
             repl_conns: Arc::new(Mutex::new(Vec::new())),
         }
