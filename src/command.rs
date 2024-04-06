@@ -5,12 +5,12 @@ use anyhow::Context;
 use crate::resp::{decode_array_of_bulkstrings, RespValue};
 
 #[derive(Debug, Clone)]
-pub enum InfoArg {
+pub(crate) enum InfoArg {
     Replication,
 }
 
 #[derive(Debug, Clone)]
-pub enum ReplConfArg {
+pub(crate) enum ReplConfArg {
     ListeningPort(u16),
     Capa(Vec<String>),
     GetAck,
@@ -18,7 +18,12 @@ pub enum ReplConfArg {
 }
 
 #[derive(Debug, Clone)]
-pub enum Command {
+pub(crate) enum ConfigArg {
+    Get(String),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum Command {
     Ping,
     Echo(Vec<u8>),
     Set {
@@ -37,6 +42,7 @@ pub enum Command {
         repl_ack_num: usize,
         timeout_dur: Duration,
     },
+    Config(ConfigArg),
 }
 
 impl Command {
@@ -119,6 +125,7 @@ impl Command {
                 repl_ack_num: _,
                 timeout_dur: _,
             } => todo!(),
+            Command::Config(_) => todo!(),
         };
         let args = args
             .iter()
@@ -130,23 +137,25 @@ impl Command {
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<(Self, &[u8])> {
         let (args, remaining_bytes) = decode_array_of_bulkstrings(bytes)?;
 
-        let (verb, mut remaining) = args.split_first().expect("Command verb must be present");
+        let (verb, mut remaining) = args.split_first().context("Extract command verb")?;
 
         let cmd = match &verb.to_ascii_lowercase()[..] {
             b"ping" => Command::Ping,
             b"echo" => {
-                let (val, _remaning) = remaining.split_first().expect("ECHO argument");
+                let (val, _remaning) = remaining.split_first().context("Extract ECHO argument")?;
                 remaining = _remaning;
                 Command::Echo(val.clone())
             }
             b"get" => {
-                let (val, _remaining) = remaining.split_first().expect("GET key");
+                let (val, _remaining) = remaining.split_first().context("Extract GET key")?;
                 remaining = _remaining;
-                Command::Get(String::from_utf8(val.clone()).expect("Key must be UTF-8"))
+                Command::Get(
+                    String::from_utf8(val.clone()).context("UTF-8 decode bytes for GET key")?,
+                )
             }
             b"set" => {
-                let (key, _remaining) = remaining.split_first().expect("SET key");
-                let (value, _remaining) = _remaining.split_first().expect("SET value");
+                let (key, _remaining) = remaining.split_first().context("Extract SET key")?;
+                let (value, _remaining) = _remaining.split_first().context("Extract SET value")?;
 
                 let (is_px_present, _remaining) = match _remaining.split_first() {
                     Some((px_key, __remaining)) => match &px_key.to_ascii_lowercase()[..] {
@@ -157,9 +166,13 @@ impl Command {
                 };
                 let (px, _remaining) = match is_px_present {
                     true => {
-                        let (px, __remaining) = _remaining.split_first().expect("expiry argument");
-                        let px = String::from_utf8(px.clone()).expect("Valid string");
-                        let px = px.parse::<usize>().expect("Valid number");
+                        let (px, __remaining) = _remaining
+                            .split_first()
+                            .context("Extract expiry argument")?;
+                        let px = String::from_utf8(px.clone())
+                            .context("UTF-8 decode expiry string")?
+                            .parse::<usize>()
+                            .context("Parse expiry string to number")?;
                         (Some(px), __remaining)
                     }
                     false => (None, _remaining),
@@ -168,8 +181,8 @@ impl Command {
                 remaining = _remaining;
 
                 Command::Set {
-                    key: String::from_utf8(key.clone()).expect("Valid UTF-8 key"),
-                    value: String::from_utf8(value.clone()).expect("Valid UTF-8 value"),
+                    key: String::from_utf8(key.clone()).context("UTF-8 decode SET key")?,
+                    value: String::from_utf8(value.clone()).context("UTF-8 decode SET value")?,
                     px,
                 }
             }
@@ -189,18 +202,19 @@ impl Command {
                 Command::Info(info_arg)
             }
             b"replconf" => {
-                let (arg, mut _remaining) =
-                    remaining.split_first().expect("First REPLCONF argument");
+                let (arg, mut _remaining) = remaining
+                    .split_first()
+                    .context("Extract REPLCONF argument")?;
 
                 let replconf_arg = match &arg.to_ascii_lowercase()[..] {
                     b"listening-port" => {
                         let (port, __remaining) = _remaining
                             .split_first()
-                            .expect("Listening port must be present");
+                            .context("Extract listening port argument")?;
                         let port = std::str::from_utf8(port)
-                            .expect("Valid UTF-8 string for listening port")
+                            .context("UTF-8 decode listening port")?
                             .parse::<u16>()
-                            .expect("Valid u16 port number");
+                            .context("Parse listening port string to number")?;
                         _remaining = __remaining;
                         ReplConfArg::ListeningPort(port)
                     }
@@ -208,9 +222,9 @@ impl Command {
                         let mut capas = Vec::new();
                         let (capa, mut __remaining) = _remaining
                             .split_first()
-                            .expect("Capability argument must be present");
+                            .context("Extract capability argument")?;
                         let _capa = std::str::from_utf8(capa)
-                            .expect("Valid UTF-8 string for capability argument")
+                            .context("UTF-8 decode capability argument")?
                             .to_string();
                         capas.push(_capa);
                         _remaining = __remaining;
@@ -225,9 +239,9 @@ impl Command {
                             assert_eq!(&arg[..], b"capa");
                             let (capa, mut __remaining) = __remaining
                                 .split_first()
-                                .expect("Capability argument must be present");
+                                .context("Extract capability argument")?;
                             let _capa = std::str::from_utf8(capa)
-                                .expect("Valid UTF-8 string for capability argument")
+                                .context("UTF-8 decode capability argument")?
                                 .to_string();
                             capas.push(_capa);
                             _remaining = __remaining;
@@ -235,19 +249,21 @@ impl Command {
                         ReplConfArg::Capa(capas)
                     }
                     b"getack" => {
-                        let (arg, __remaining) =
-                            _remaining.split_first().expect("REPLCONF GETACK argument");
+                        let (arg, __remaining) = _remaining
+                            .split_first()
+                            .context("Extract REPLCONF GETACK argument")?;
                         assert_eq!(&arg[..], b"*");
                         _remaining = __remaining;
                         ReplConfArg::GetAck
                     }
                     b"ack" => {
-                        let (arg, __remaining) =
-                            _remaining.split_first().expect("REPLCONF ACK offset");
+                        let (arg, __remaining) = _remaining
+                            .split_first()
+                            .context("Extract REPLCONF ACK offset")?;
                         let offset = std::str::from_utf8(arg)
-                            .expect("Valid UTF-8 for offset number")
+                            .context("UTF-8 decode offset")?
                             .parse::<usize>()
-                            .expect("Valid offset number");
+                            .context("Parse offset from string to number")?;
                         _remaining = __remaining;
                         ReplConfArg::Ack(offset)
                     }
@@ -260,31 +276,31 @@ impl Command {
                 Command::ReplConf(replconf_arg)
             }
             b"psync" => {
-                let (repl_id, _remaining) = remaining
-                    .split_first()
-                    .expect("Replication ID must be present");
+                let (repl_id, _remaining) =
+                    remaining.split_first().context("Extract replication ID")?;
                 let repl_id = match &repl_id[..] {
                     b"?" => None,
                     bytes => Some(
                         std::str::from_utf8(&bytes)
-                            .expect("Replication ID must be valid UTF-8 chars")
+                            .context("UTF-8 decode replication ID")?
                             .chars()
                             .collect::<Vec<char>>()
                             .try_into()
-                            .expect("Replication ID must be 40 characters long"),
+                            .ok()
+                            .context("Cast replication ID as 40-character array")?,
                     ),
                 };
 
                 let (repl_offset, _remaining) = _remaining
                     .split_first()
-                    .expect("Replication offset must be present");
+                    .context("Extract replication offset")?;
                 let repl_offset = match &repl_offset[..] {
                     b"-1" => None,
                     bytes => Some(
                         std::str::from_utf8(&bytes)
-                            .expect("Replication offset must be valid UTF-8 string")
+                            .context("UTF-8 decode replication offset")?
                             .parse::<usize>()
-                            .expect("Replication offset must be a valid number"),
+                            .context("Parse replication offset from string to number")?,
                     ),
                 };
 
@@ -317,6 +333,19 @@ impl Command {
                 Command::Wait {
                     repl_ack_num: repl_num,
                     timeout_dur: Duration::from_millis(timeout_dur),
+                }
+            }
+            b"config" => {
+                let (arg, _remaining) = remaining.split_first().context("Retrieve CONFIG arg")?;
+                match &arg.to_ascii_lowercase()[..] {
+                    b"get" => {
+                        let (key, _remaining) =
+                            _remaining.split_first().context("Extract CONFIG GET key")?;
+                        let key = std::str::from_utf8(key).context("Parse CONFIG GET key")?;
+                        remaining = _remaining;
+                        Command::Config(ConfigArg::Get(key.to_string()))
+                    }
+                    s => panic!("Unrecognized CONFIG argument: {:?}", s),
                 }
             }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),

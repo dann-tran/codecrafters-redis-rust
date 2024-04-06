@@ -12,13 +12,25 @@ use tokio::net::{TcpListener, TcpStream};
 struct Cli {
     #[arg(long, default_value_t = 6379)]
     port: u16,
+
+    #[arg(long)]
+    dir: Option<String>,
+
+    #[arg(long)]
+    dbfilename: Option<String>,
+
     #[arg(long, num_args = 2, value_delimiter = ' ')]
     replicaof: Option<Vec<String>>,
 }
 
 #[tokio::main]
 async fn main() {
-    let Cli { port, replicaof } = Cli::parse();
+    let Cli {
+        port,
+        dir,
+        dbfilename,
+        replicaof,
+    } = Cli::parse();
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
     match replicaof {
@@ -52,7 +64,7 @@ async fn main() {
             }
         }
         None => {
-            let server = MasterServer::new();
+            let server = MasterServer::new(dir, dbfilename);
 
             let listener = TcpListener::bind(&addr)
                 .await

@@ -11,15 +11,22 @@ use tokio::{
 };
 
 use crate::{
-    command::{Command, ReplConfArg},
+    command::{Command, ConfigArg, ReplConfArg},
     resp::RespValue,
     server::{handle_info, send_bulk_string, send_cmd, send_integer, send_simple_string},
 };
 
-use super::{MasterInfo, RedisServerHandler, RedisStore};
+use super::{send_resp, MasterInfo, RedisServerHandler, RedisStore};
+
+#[derive(Clone)]
+struct ServerConfig {
+    dir: Option<String>,
+    dbfilename: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct MasterServer {
+    config: ServerConfig,
     master_info: Arc<Mutex<MasterInfo>>,
     store: Arc<Mutex<RedisStore>>,
     repl_conns: Arc<Mutex<Vec<Arc<Mutex<TcpStream>>>>>,
@@ -37,7 +44,7 @@ impl RedisServerHandler for MasterServer {
                 .unwrap();
             let (cmd, _) = Command::from_bytes(&buf).unwrap();
 
-            let var_name = match cmd {
+            match cmd {
                 Command::Ping => {
                     eprintln!("Handling PING from client");
                     send_simple_string(&mut socket, "PONG").await;
@@ -212,15 +219,35 @@ impl RedisServerHandler for MasterServer {
 
                     send_integer(&mut socket, res_value as i64).await;
                 }
+                Command::Config(arg) => match arg {
+                    ConfigArg::Get(key) => {
+                        let value = match &key.to_ascii_lowercase()[..] {
+                            "dir" => &self.config.dir,
+                            "dbfilename" => &self.config.dbfilename,
+                            s => panic!("Unexpected CONFIG GET key: {}", s),
+                        };
+                        let resp = RespValue::Array(vec![
+                            RespValue::BulkString(key.as_bytes().to_vec()),
+                            RespValue::BulkString(
+                                (match value {
+                                    Some(val) => val.as_bytes(),
+                                    None => b"",
+                                })
+                                .to_vec(),
+                            ),
+                        ]);
+                        send_resp(&mut socket, &resp).await;
+                    }
+                },
             };
-            var_name
         }
     }
 }
 
 impl MasterServer {
-    pub fn new() -> Self {
+    pub fn new(dir: Option<String>, dbfilename: Option<String>) -> Self {
         Self {
+            config: ServerConfig { dir, dbfilename },
             master_info: Arc::new(Mutex::new(MasterInfo::new())),
             store: Arc::new(Mutex::new(RedisStore::new())),
             repl_conns: Arc::new(Mutex::new(Vec::new())),
