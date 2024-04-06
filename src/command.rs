@@ -27,11 +27,11 @@ pub(crate) enum Command {
     Ping,
     Echo(Vec<u8>),
     Set {
-        key: String,
-        value: String,
+        key: Vec<u8>,
+        value: Vec<u8>,
         px: Option<usize>,
     },
-    Get(String),
+    Get(Vec<u8>),
     Info(Option<InfoArg>),
     ReplConf(ReplConfArg),
     PSync {
@@ -51,11 +51,7 @@ impl Command {
             Command::Ping => vec![b"PING".to_vec()],
             Command::Echo(arg) => vec![b"ECHO".to_vec(), arg.clone()],
             Command::Set { key, value, px } => {
-                let mut vec = vec![
-                    b"SET".to_vec(),
-                    key.as_bytes().to_vec(),
-                    value.as_bytes().to_vec(),
-                ];
+                let mut vec = vec![b"SET".to_vec(), key.clone(), value.clone()];
                 match px {
                     Some(val) => {
                         let mut px_args = vec![b"px".to_vec(), val.to_string().as_bytes().to_vec()];
@@ -65,7 +61,7 @@ impl Command {
                 }
                 vec
             }
-            Command::Get(key) => vec![b"GET".to_vec(), key.as_bytes().to_vec()],
+            Command::Get(key) => vec![b"GET".to_vec(), key.clone()],
             Command::Info(info_arg) => {
                 let mut vec = vec![b"INFO".to_vec()];
                 match info_arg {
@@ -149,9 +145,7 @@ impl Command {
             b"get" => {
                 let (val, _remaining) = remaining.split_first().context("Extract GET key")?;
                 remaining = _remaining;
-                Command::Get(
-                    String::from_utf8(val.clone()).context("UTF-8 decode bytes for GET key")?,
-                )
+                Command::Get(val.clone())
             }
             b"set" => {
                 let (key, _remaining) = remaining.split_first().context("Extract SET key")?;
@@ -181,8 +175,8 @@ impl Command {
                 remaining = _remaining;
 
                 Command::Set {
-                    key: String::from_utf8(key.clone()).context("UTF-8 decode SET key")?,
-                    value: String::from_utf8(value.clone()).context("UTF-8 decode SET value")?,
+                    key: key.clone(),
+                    value: value.clone(),
                     px,
                 }
             }

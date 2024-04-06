@@ -30,14 +30,14 @@ impl MasterInfo {
 }
 
 pub struct RSValue {
-    value: String,
+    value: Vec<u8>, // supports only binary string values
     expiry: Option<u128>,
 }
 
-pub struct RedisStore(HashMap<String, RSValue>);
+pub struct RedisStore(HashMap<Vec<u8>, RSValue>);
 
 impl RedisStore {
-    fn get(&mut self, key: &String) -> Option<String> {
+    fn get(&mut self, key: &Vec<u8>) -> Option<Vec<u8>> {
         match self.0.get(key) {
             Some(RSValue { value, expiry }) => match expiry {
                 Some(v) => {
@@ -54,7 +54,7 @@ impl RedisStore {
         }
     }
 
-    fn set(&mut self, key: &String, value: &String, px: &Option<usize>) {
+    fn set(&mut self, key: &Vec<u8>, value: &Vec<u8>, px: &Option<usize>) {
         self.0.insert(
             key.clone(),
             RSValue {

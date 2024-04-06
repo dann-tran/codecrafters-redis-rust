@@ -89,7 +89,7 @@ impl RedisServerHandler for MasterServer {
                     drop(store);
 
                     let res = match value {
-                        Some(x) => RespValue::BulkString(x.as_bytes().to_vec()),
+                        Some(x) => RespValue::BulkString(x),
                         None => RespValue::NullBulkString,
                     };
                     let buf = res.to_bytes();
