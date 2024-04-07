@@ -190,6 +190,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzf"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c034ef7ca69017088f8522e6f74301232f13ba43b5640941abc4dce26f530521"
+
+[[package]]
 name = "memchr"
 version = "2.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -273,6 +279,7 @@ dependencies = [
  "bytes",
  "clap",
  "hex",
+ "lzf",
  "thiserror",
  "tokio",
 ]

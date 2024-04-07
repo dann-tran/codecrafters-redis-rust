@@ -64,7 +64,7 @@ async fn main() {
             }
         }
         None => {
-            let server = MasterServer::new(dir, dbfilename);
+            let server = MasterServer::new(dir, dbfilename).await;
 
             let listener = TcpListener::bind(&addr)
                 .await

@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use tokio::{
+    fs,
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::Mutex,
@@ -12,11 +13,16 @@ use tokio::{
 
 use crate::{
     command::{Command, ConfigArg, ReplConfArg},
+    model::RedisDb,
+    rdb::parse_rdb,
     resp::RespValue,
-    server::{handle_info, send_bulk_string, send_cmd, send_integer, send_simple_string},
+    server::{
+        handle_info, send_bulk_string, send_cmd, send_integer, send_simple_string,
+        store::RedisStore,
+    },
 };
 
-use super::{send_resp, MasterInfo, RedisServerHandler, RedisStore};
+use super::{send_resp, MasterInfo, RedisServerHandler};
 
 #[derive(Clone)]
 struct ServerConfig {
@@ -28,8 +34,23 @@ struct ServerConfig {
 pub struct MasterServer {
     config: ServerConfig,
     master_info: Arc<Mutex<MasterInfo>>,
-    store: Arc<Mutex<RedisStore>>,
+    store: RedisStore,
     repl_conns: Arc<Mutex<Vec<Arc<Mutex<TcpStream>>>>>,
+}
+
+impl MasterServer {
+    pub async fn new(dir: Option<String>, dbfilename: Option<String>) -> Self {
+        let databases = load_rdb(&dir, &dbfilename).await;
+
+        Self {
+            config: ServerConfig { dir, dbfilename },
+            master_info: Arc::new(Mutex::new(MasterInfo::new())),
+            store: databases
+                .map(|dbs| RedisStore::from(dbs))
+                .unwrap_or_else(|| RedisStore::new()),
+            repl_conns: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
 }
 
 #[async_trait]
@@ -56,9 +77,7 @@ impl RedisServerHandler for MasterServer {
                 Command::Set { key, value, px } => {
                     eprintln!("Handling SET from client");
 
-                    let mut store = self.store.lock().await;
-                    store.set(&key, &value, &px);
-                    drop(store);
+                    self.store.set(&key, &value, &px).await;
 
                     eprintln!("Propagate SET command to slaves");
                     let cmd = Command::Set {
@@ -84,9 +103,7 @@ impl RedisServerHandler for MasterServer {
                 Command::Get(key) => {
                     eprintln!("Handling GET from client");
 
-                    let mut store = self.store.lock().await;
-                    let value = store.get(&key);
-                    drop(store);
+                    let value = self.store.get(&key).await;
 
                     let res = match value {
                         Some(x) => RespValue::BulkString(x),
@@ -239,18 +256,29 @@ impl RedisServerHandler for MasterServer {
                         send_resp(&mut socket, &resp).await;
                     }
                 },
+                Command::Keys => {
+                    let keys = self.store.keys().await;
+                    let resp = RespValue::Array(
+                        keys.into_iter().map(|k| RespValue::BulkString(k)).collect(),
+                    );
+                    send_resp(&mut socket, &resp).await;
+                }
             };
         }
     }
 }
 
-impl MasterServer {
-    pub fn new(dir: Option<String>, dbfilename: Option<String>) -> Self {
-        Self {
-            config: ServerConfig { dir, dbfilename },
-            master_info: Arc::new(Mutex::new(MasterInfo::new())),
-            store: Arc::new(Mutex::new(RedisStore::new())),
-            repl_conns: Arc::new(Mutex::new(Vec::new())),
+async fn load_rdb(
+    dir: &Option<String>,
+    dbfilename: &Option<String>,
+) -> Option<HashMap<u32, RedisDb>> {
+    if let (Some(dir), Some(dbfilename)) = (dir, dbfilename) {
+        if let Ok(bytes) = fs::read(Path::new(dir).join(dbfilename)).await {
+            if let Ok(rdb) = parse_rdb(&bytes) {
+                return Some(rdb.databases);
+            }
         }
     }
+    eprintln!("Unable to parse RDB file");
+    None
 }

@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use anyhow::Context;
 
 pub fn split_by_clrf(bytes: &[u8]) -> Option<(Vec<u8>, &[u8])> {
@@ -19,11 +17,4 @@ pub fn bytes2usize(bytes: &[u8]) -> anyhow::Result<usize> {
         .context("Decode UTF-8")?
         .parse::<usize>()
         .context("Parse from string to usize")
-}
-
-pub(crate) fn get_current_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis()
 }

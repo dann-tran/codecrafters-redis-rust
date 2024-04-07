@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
+use crate::command::Command;
+use crate::model::MasterInfo;
 use crate::resp::RespValue;
-use crate::{command::Command, utils::get_current_ms};
 use anyhow::Context;
 use async_trait::async_trait;
 use tokio::io::AsyncReadExt;
@@ -9,65 +10,7 @@ use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub mod master;
 pub mod replica;
-
-#[derive(Clone)]
-pub struct MasterInfo {
-    repl_id: [char; 40],
-    repl_offset: usize,
-}
-
-impl MasterInfo {
-    pub fn new() -> Self {
-        Self {
-            repl_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
-                .chars()
-                .collect::<Vec<char>>()
-                .try_into()
-                .expect("40 characters"),
-            repl_offset: 0,
-        }
-    }
-}
-
-pub struct RSValue {
-    value: Vec<u8>, // supports only binary string values
-    expiry: Option<u128>,
-}
-
-pub struct RedisStore(HashMap<Vec<u8>, RSValue>);
-
-impl RedisStore {
-    fn get(&mut self, key: &Vec<u8>) -> Option<Vec<u8>> {
-        match self.0.get(key) {
-            Some(RSValue { value, expiry }) => match expiry {
-                Some(v) => {
-                    if get_current_ms() > *v {
-                        self.0.remove(key);
-                        None
-                    } else {
-                        Some(value.clone())
-                    }
-                }
-                None => Some(value.clone()),
-            },
-            None => None,
-        }
-    }
-
-    fn set(&mut self, key: &Vec<u8>, value: &Vec<u8>, px: &Option<usize>) {
-        self.0.insert(
-            key.clone(),
-            RSValue {
-                value: value.clone(),
-                expiry: px.map(|v| get_current_ms() + (v as u128)),
-            },
-        );
-    }
-
-    pub fn new() -> Self {
-        Self(HashMap::new())
-    }
-}
+pub mod store;
 
 async fn send_resp(socket: &mut TcpStream, value: &RespValue) {
     let buf = value.to_bytes();
@@ -132,15 +75,17 @@ async fn handle_info(socket: &mut TcpStream, role: &str, master_info: &MasterInf
         b"master_repl_offset".to_vec(),
         master_info.repl_offset.to_string().into(),
     );
-    let lines = info_map.iter().fold(Vec::new(), |mut acc, (k, v)| {
-        if !acc.is_empty() {
-            acc.push(b'\n');
-        }
-        acc.extend(k);
-        acc.push(b':');
-        acc.extend(v);
-        acc
-    });
+    let lines = info_map
+        .into_iter()
+        .fold(Vec::new(), |mut acc, (mut k, mut v)| {
+            if !acc.is_empty() {
+                acc.push(b'\n');
+            }
+            acc.append(&mut k);
+            acc.push(b':');
+            acc.append(&mut v);
+            acc
+        });
 
     let res = RespValue::BulkString(lines);
     let buf = res.to_bytes();

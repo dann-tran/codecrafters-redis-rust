@@ -10,17 +10,18 @@ use tokio::{
 
 use crate::{
     command::{Command, ReplConfArg},
+    rdb::{parse_rdb, Rdb},
     resp::{decode, RespValue},
     server::{handle_info, send_bulk_string, send_cmd, send_simple_string},
     utils::{bytes2usize, split_by_clrf},
 };
 
-use super::{assert_recv_simple_string, MasterInfo, RedisServerHandler, RedisStore};
+use super::{assert_recv_simple_string, store::RedisStore, MasterInfo, RedisServerHandler};
 
 #[derive(Clone)]
 pub struct ReplicaServer {
     master_info: MasterInfo,
-    store: Arc<Mutex<RedisStore>>,
+    store: RedisStore,
     offset: Arc<Mutex<usize>>,
 }
 
@@ -46,18 +47,14 @@ impl RedisServerHandler for ReplicaServer {
                     send_bulk_string(&mut socket, &val).await;
                 }
                 Command::Set { key, value, px } => {
-                    let mut store = self.store.lock().await;
-                    store.set(&key, &value, &px);
-                    drop(store);
-
+                    eprintln!("Handling SET from client");
+                    self.store.set(&key, &value, &px).await;
                     send_simple_string(&mut socket, "OK").await;
                 }
                 Command::Get(key) => {
                     eprintln!("Handling GET from client");
 
-                    let mut store = self.store.lock().await;
-                    let value = store.get(&key);
-                    drop(store);
+                    let value = self.store.get(&key).await;
 
                     let res = match value {
                         Some(x) => RespValue::BulkString(x),
@@ -125,7 +122,7 @@ impl ReplicaServer {
         ))
     }
 
-    fn parse_rdb(buf: &[u8]) -> anyhow::Result<(&[u8], &[u8])> {
+    fn parse_rdb(buf: &[u8]) -> anyhow::Result<(Rdb, &[u8])> {
         // $<length>\r\n<contents>
         if !buf.starts_with(b"$") {
             return Err(anyhow::anyhow!(
@@ -137,11 +134,13 @@ impl ReplicaServer {
         let (length, remaining) = split_by_clrf(&buf[1..]).context("Extract length bytes")?;
         let length = bytes2usize(&length)?;
 
-        Ok(remaining.split_at(length))
+        let (rdb, remaining) = remaining.split_at(length);
+        let rdb = parse_rdb(rdb)?;
+        Ok((rdb, remaining))
     }
 
     async fn handle_cmd_from_master(
-        &self,
+        &mut self,
         recv_buf: &[u8],
         buf_len: usize,
         socket: &mut TcpStream,
@@ -155,10 +154,7 @@ impl ReplicaServer {
             match cmd {
                 Command::Set { key, value, px } => {
                     eprintln!("Handling SET propagation from master");
-
-                    let mut store = self.store.lock().await;
-                    store.set(&key, &value, &px);
-                    drop(store);
+                    self.store.set(&key, &value, &px).await;
                 }
                 Command::ReplConf(ReplConfArg::GetAck) => {
                     eprintln!("Handling REPLCONF GETACK * from master");
@@ -229,11 +225,11 @@ impl ReplicaServer {
             remaining = &recv_buf[..];
             n = _n;
         }
-        let (_, remaining) = Self::parse_rdb(&remaining)?;
+        let (rdb, remaining) = Self::parse_rdb(&remaining)?;
 
-        let server = Self {
+        let mut server = Self {
             master_info: master_info,
-            store: Arc::new(Mutex::new(RedisStore::new())),
+            store: RedisStore::from(rdb.databases),
             offset: Arc::new(Mutex::new(0)),
         };
 

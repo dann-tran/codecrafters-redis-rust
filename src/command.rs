@@ -29,7 +29,7 @@ pub(crate) enum Command {
     Set {
         key: Vec<u8>,
         value: Vec<u8>,
-        px: Option<usize>,
+        px: Option<Duration>,
     },
     Get(Vec<u8>),
     Info(Option<InfoArg>),
@@ -43,6 +43,7 @@ pub(crate) enum Command {
         timeout_dur: Duration,
     },
     Config(ConfigArg),
+    Keys,
 }
 
 impl Command {
@@ -54,7 +55,10 @@ impl Command {
                 let mut vec = vec![b"SET".to_vec(), key.clone(), value.clone()];
                 match px {
                     Some(val) => {
-                        let mut px_args = vec![b"px".to_vec(), val.to_string().as_bytes().to_vec()];
+                        let mut px_args = vec![
+                            b"px".to_vec(),
+                            val.as_millis().to_string().as_bytes().to_vec(),
+                        ];
                         vec.append(&mut px_args);
                     }
                     _ => {}
@@ -122,10 +126,11 @@ impl Command {
                 timeout_dur: _,
             } => todo!(),
             Command::Config(_) => todo!(),
+            Command::Keys => todo!(),
         };
         let args = args
-            .iter()
-            .map(|v| RespValue::BulkString(v.clone()))
+            .into_iter()
+            .map(|v| RespValue::BulkString(v))
             .collect::<Vec<RespValue>>();
         RespValue::Array(args).to_bytes()
     }
@@ -163,9 +168,9 @@ impl Command {
                         let (px, __remaining) = _remaining
                             .split_first()
                             .context("Extract expiry argument")?;
-                        let px = String::from_utf8(px.clone())
+                        let px = std::str::from_utf8(px)
                             .context("UTF-8 decode expiry string")?
-                            .parse::<usize>()
+                            .parse::<u64>()
                             .context("Parse expiry string to number")?;
                         (Some(px), __remaining)
                     }
@@ -177,7 +182,7 @@ impl Command {
                 Command::Set {
                     key: key.clone(),
                     value: value.clone(),
-                    px,
+                    px: px.map(|millis| Duration::from_millis(millis)),
                 }
             }
             b"info" => {
@@ -341,6 +346,11 @@ impl Command {
                     }
                     s => panic!("Unrecognized CONFIG argument: {:?}", s),
                 }
+            }
+            b"keys" => {
+                let (_, _remaining) = remaining.split_first().context("Retrieve KEYS arg")?;
+                remaining = _remaining;
+                Command::Keys
             }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
         };
