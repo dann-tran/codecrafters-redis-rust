@@ -44,6 +44,7 @@ pub(crate) enum Command {
     },
     Config(ConfigArg),
     Keys,
+    LookupType(Vec<u8>),
 }
 
 impl Command {
@@ -121,12 +122,7 @@ impl Command {
 
                 vec
             }
-            Command::Wait {
-                repl_ack_num: _,
-                timeout_dur: _,
-            } => todo!(),
-            Command::Config(_) => todo!(),
-            Command::Keys => todo!(),
+            _ => todo!(),
         };
         let args = args
             .into_iter()
@@ -351,6 +347,11 @@ impl Command {
                 let (_, _remaining) = remaining.split_first().context("Retrieve KEYS arg")?;
                 remaining = _remaining;
                 Command::Keys
+            }
+            b"type" => {
+                let (val, _remaining) = remaining.split_first().context("Extract TYPE key")?;
+                remaining = _remaining;
+                Command::LookupType(val.clone())
             }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
         };

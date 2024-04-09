@@ -1,16 +1,36 @@
 use std::collections::HashMap;
 
 use crate::command::Command;
-use crate::model::MasterInfo;
 use crate::resp::RespValue;
 use anyhow::Context;
 use async_trait::async_trait;
 use tokio::io::AsyncReadExt;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
+use self::store::RedisStore;
+
 pub mod master;
 pub mod replica;
 pub mod store;
+
+#[derive(Clone)]
+pub(crate) struct MasterInfo {
+    pub(crate) repl_id: [char; 40],
+    pub(crate) repl_offset: usize,
+}
+
+impl MasterInfo {
+    pub fn new() -> Self {
+        Self {
+            repl_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+                .chars()
+                .collect::<Vec<char>>()
+                .try_into()
+                .expect("40 characters"),
+            repl_offset: 0,
+        }
+    }
+}
 
 async fn send_resp(socket: &mut TcpStream, value: &RespValue) {
     let buf = value.to_bytes();
@@ -95,4 +115,40 @@ async fn handle_info(socket: &mut TcpStream, role: &str, master_info: &MasterInf
         .await
         .context("Send INFO response")
         .unwrap();
+}
+
+async fn handle_get(socket: &mut TcpStream, store: &RedisStore, key: &Vec<u8>) {
+    eprintln!("Handling GET from client");
+
+    let value = store.get(key).await;
+
+    let res = match value {
+        Some(x) => RespValue::BulkString(x),
+        None => RespValue::NullBulkString,
+    };
+    let buf = res.to_bytes();
+
+    socket
+        .write_all(&buf)
+        .await
+        .context("Send GET response")
+        .unwrap();
+}
+
+async fn handle_ping(socket: &mut TcpStream) {
+    eprintln!("Handling PING from client");
+    send_simple_string(socket, "PONG").await;
+}
+
+async fn handle_echo(socket: &mut TcpStream, val: &Vec<u8>) {
+    eprintln!("Handling ECHO from client");
+    send_bulk_string(socket, val).await;
+}
+
+async fn handle_type(socket: &mut TcpStream, store: &RedisStore, key: &Vec<u8>) {
+    let res = store
+        .lookup_type(key)
+        .await
+        .map_or("none".to_string(), |t| t.to_string());
+    send_simple_string(socket, &res).await;
 }

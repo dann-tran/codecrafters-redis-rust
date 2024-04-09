@@ -6,7 +6,7 @@ use std::{
 use anyhow::Context;
 use bytes::Buf;
 
-use crate::model::RedisDb;
+use crate::db::RedisDb;
 
 static REDIS_MAGIC_STRING: &[u8; 5] = b"REDIS";
 

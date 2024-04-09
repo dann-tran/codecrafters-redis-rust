@@ -1,24 +1,19 @@
 use std::{
     collections::HashMap,
+    fmt,
     time::{Duration, SystemTime},
 };
 
-#[derive(Clone)]
-pub(crate) struct MasterInfo {
-    pub(crate) repl_id: [char; 40],
-    pub(crate) repl_offset: usize,
+pub(crate) enum RedisValueType {
+    String,
 }
 
-impl MasterInfo {
-    pub fn new() -> Self {
-        Self {
-            repl_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
-                .chars()
-                .collect::<Vec<char>>()
-                .try_into()
-                .expect("40 characters"),
-            repl_offset: 0,
-        }
+impl fmt::Display for RedisValueType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            RedisValueType::String => "string",
+        };
+        write!(f, "{}", s)
     }
 }
 
@@ -119,6 +114,10 @@ impl RedisDb {
             .collect::<Vec<Vec<u8>>>();
         keys.append(&mut expire_keys);
         keys
+    }
+
+    pub(crate) fn lookup_type(&mut self, key: &Vec<u8>) -> Option<RedisValueType> {
+        self.get(key).map(|_| RedisValueType::String)
     }
 
     pub fn new() -> Self {

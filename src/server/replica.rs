@@ -2,21 +2,20 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-    sync::Mutex,
-};
+use tokio::{io::AsyncReadExt, net::TcpStream, sync::Mutex};
 
 use crate::{
     command::{Command, ReplConfArg},
     rdb::{parse_rdb, Rdb},
     resp::{decode, RespValue},
-    server::{handle_info, send_bulk_string, send_cmd, send_simple_string},
+    server::{handle_info, send_cmd},
     utils::{bytes2usize, split_by_clrf},
 };
 
-use super::{assert_recv_simple_string, store::RedisStore, MasterInfo, RedisServerHandler};
+use super::{
+    assert_recv_simple_string, handle_echo, handle_get, handle_ping, handle_type,
+    store::RedisStore, MasterInfo, RedisServerHandler,
+};
 
 #[derive(Clone)]
 pub struct ReplicaServer {
@@ -39,43 +38,20 @@ impl RedisServerHandler for ReplicaServer {
 
             match cmd {
                 Command::Ping => {
-                    eprintln!("Handling PING from client");
-                    send_simple_string(&mut socket, "PONG").await;
+                    handle_ping(&mut socket).await;
                 }
                 Command::Echo(val) => {
-                    eprintln!("Handling ECHO from client");
-                    send_bulk_string(&mut socket, &val).await;
-                }
-                Command::Set { key, value, px } => {
-                    eprintln!("Handling SET from client");
-                    self.store.set(&key, &value, &px).await;
-                    send_simple_string(&mut socket, "OK").await;
+                    handle_echo(&mut socket, &val).await;
                 }
                 Command::Get(key) => {
-                    eprintln!("Handling GET from client");
-
-                    let value = self.store.get(&key).await;
-
-                    let res = match value {
-                        Some(x) => RespValue::BulkString(x),
-                        None => RespValue::NullBulkString,
-                    };
-                    let buf = res.to_bytes();
-
-                    socket
-                        .write_all(&buf)
-                        .await
-                        .context("Send GET response")
-                        .unwrap();
+                    handle_get(&mut socket, &self.store, &key).await;
                 }
                 Command::Info(_) => {
                     eprintln!("Handling INFO from client");
                     handle_info(&mut socket, "slave", &self.master_info).await;
                 }
-                Command::ReplConf(_) => {
-                    eprintln!("Handling REPLCONF from client");
-
-                    send_simple_string(&mut socket, "OK").await;
+                Command::LookupType(key) => {
+                    handle_type(&mut socket, &self.store, &key).await;
                 }
                 c => {
                     panic!("Unsupported command: {:?}", c);

@@ -13,16 +13,15 @@ use tokio::{
 
 use crate::{
     command::{Command, ConfigArg, ReplConfArg},
-    model::RedisDb,
+    db::RedisDb,
     rdb::parse_rdb,
     resp::RespValue,
-    server::{
-        handle_info, send_bulk_string, send_cmd, send_integer, send_simple_string,
-        store::RedisStore,
-    },
+    server::{handle_info, send_cmd, send_integer, send_simple_string, store::RedisStore},
 };
 
-use super::{send_resp, MasterInfo, RedisServerHandler};
+use super::{
+    handle_echo, handle_get, handle_ping, handle_type, send_resp, MasterInfo, RedisServerHandler,
+};
 
 #[derive(Clone)]
 struct ServerConfig {
@@ -45,9 +44,7 @@ impl MasterServer {
         Self {
             config: ServerConfig { dir, dbfilename },
             master_info: Arc::new(Mutex::new(MasterInfo::new())),
-            store: databases
-                .map(|dbs| RedisStore::from(dbs))
-                .unwrap_or_else(|| RedisStore::new()),
+            store: databases.map_or_else(|| RedisStore::new(), |dbs| RedisStore::from(dbs)),
             repl_conns: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -67,12 +64,10 @@ impl RedisServerHandler for MasterServer {
 
             match cmd {
                 Command::Ping => {
-                    eprintln!("Handling PING from client");
-                    send_simple_string(&mut socket, "PONG").await;
+                    handle_ping(&mut socket).await;
                 }
                 Command::Echo(val) => {
-                    eprintln!("Handling ECHO from client");
-                    send_bulk_string(&mut socket, &val).await;
+                    handle_echo(&mut socket, &val).await;
                 }
                 Command::Set { key, value, px } => {
                     eprintln!("Handling SET from client");
@@ -101,21 +96,7 @@ impl RedisServerHandler for MasterServer {
                     send_simple_string(&mut socket, "OK").await;
                 }
                 Command::Get(key) => {
-                    eprintln!("Handling GET from client");
-
-                    let value = self.store.get(&key).await;
-
-                    let res = match value {
-                        Some(x) => RespValue::BulkString(x),
-                        None => RespValue::NullBulkString,
-                    };
-                    let buf = res.to_bytes();
-
-                    socket
-                        .write_all(&buf)
-                        .await
-                        .context("Send GET response")
-                        .unwrap();
+                    handle_get(&mut socket, &self.store, &key).await;
                 }
                 Command::Info(_) => {
                     eprintln!("Handling INFO from client");
@@ -128,7 +109,6 @@ impl RedisServerHandler for MasterServer {
                 }
                 Command::ReplConf(_) => {
                     eprintln!("Handling REPLCONF from client");
-
                     send_simple_string(&mut socket, "OK").await;
                 }
                 Command::PSync {
@@ -262,6 +242,9 @@ impl RedisServerHandler for MasterServer {
                         keys.into_iter().map(|k| RespValue::BulkString(k)).collect(),
                     );
                     send_resp(&mut socket, &resp).await;
+                }
+                Command::LookupType(key) => {
+                    handle_type(&mut socket, &self.store, &key).await;
                 }
             };
         }
