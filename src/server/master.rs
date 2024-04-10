@@ -73,14 +73,10 @@ impl RedisServerHandler for MasterServer {
                 Command::Set { key, value, px } => {
                     eprintln!("Handling SET from client");
 
-                    self.store.set(&key, &value, &px).await;
+                    self.store.set(&key, value.clone(), px.clone()).await;
 
                     eprintln!("Propagate SET command to slaves");
-                    let cmd = Command::Set {
-                        key: key.clone(),
-                        value: value.clone(),
-                        px: px.clone(),
-                    };
+                    let cmd = Command::Set { key, value, px };
 
                     let mut master_info = self.master_info.lock().await;
                     master_info.repl_offset += cmd.to_bytes().len();

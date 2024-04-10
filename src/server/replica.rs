@@ -137,7 +137,7 @@ impl ReplicaServer {
             match cmd {
                 Command::Set { key, value, px } => {
                     eprintln!("Handling SET propagation from master");
-                    self.store.set(&key, &value, &px).await;
+                    self.store.set(&key, value, px).await;
                 }
                 Command::ReplConf(ReplConfArg::GetAck) => {
                     eprintln!("Handling REPLCONF GETACK * from master");

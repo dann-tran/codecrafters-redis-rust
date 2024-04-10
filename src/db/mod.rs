@@ -56,7 +56,7 @@ impl RedisDb {
         }
     }
 
-    pub(crate) fn set(&mut self, key: &Vec<u8>, value: &Vec<u8>, px: &Option<Duration>) {
+    pub(crate) fn set(&mut self, key: &Vec<u8>, value: Vec<u8>, px: Option<Duration>) {
         let nonexpire_val = self.nonexpire_table.get_mut(key);
         if let Some(stored_val) = nonexpire_val {
             eprintln!("Key found in nonexpire table: {:?}", key);
@@ -67,7 +67,7 @@ impl RedisDb {
                     );
                     self.nonexpire_table.remove(key);
                     self.expire_table
-                        .insert(key.clone(), (value.clone(), SystemTime::now() + *dur));
+                        .insert(key.clone(), (value.clone(), SystemTime::now() + dur));
                 }
                 None => {
                     eprintln!("KV has no expiry; mutate value in-place.");
@@ -83,7 +83,7 @@ impl RedisDb {
             match px {
                 Some(dur) => {
                     eprintln!("KV has an expiry; mutate value and expiry in-place.");
-                    *stored_val = (value.clone(), SystemTime::now() + *dur);
+                    *stored_val = (value.clone(), SystemTime::now() + dur);
                 }
                 None => {
                     eprintln!(
@@ -100,7 +100,7 @@ impl RedisDb {
         match px {
             Some(dur) => {
                 self.expire_table
-                    .insert(key.clone(), (value.clone(), SystemTime::now() + *dur));
+                    .insert(key.clone(), (value.clone(), SystemTime::now() + dur));
             }
             None => {
                 self.nonexpire_table.insert(key.clone(), value.clone());

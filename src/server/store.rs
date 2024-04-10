@@ -41,7 +41,7 @@ impl RedisStore {
         self.get_cur_db().lock().await.get(key)
     }
 
-    pub(crate) async fn set(&self, key: &Vec<u8>, value: &Vec<u8>, px: &Option<Duration>) {
+    pub(crate) async fn set(&self, key: &Vec<u8>, value: Vec<u8>, px: Option<Duration>) {
         self.get_cur_db().lock().await.set(key, value, px)
     }
 
