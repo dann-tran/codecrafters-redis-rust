@@ -212,6 +212,7 @@ pub fn parse_rdb(bytes: &[u8]) -> anyhow::Result<Rdb> {
                     RedisDb {
                         nonexpire_table,
                         expire_table,
+                        streams: HashMap::new(),
                     },
                 );
             }

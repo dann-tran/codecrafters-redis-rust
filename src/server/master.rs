@@ -20,7 +20,8 @@ use crate::{
 };
 
 use super::{
-    handle_echo, handle_get, handle_ping, handle_type, send_resp, MasterInfo, RedisServerHandler,
+    handle_echo, handle_get, handle_ping, handle_type, handle_xadd, send_resp, MasterInfo,
+    RedisServerHandler,
 };
 
 #[derive(Clone)]
@@ -245,6 +246,13 @@ impl RedisServerHandler for MasterServer {
                 }
                 Command::LookupType(key) => {
                     handle_type(&mut socket, &self.store, &key).await;
+                }
+                Command::XAdd {
+                    key,
+                    entry_id,
+                    data,
+                } => {
+                    handle_xadd(&mut socket, &self.store, &key, &entry_id, data).await;
                 }
             };
         }

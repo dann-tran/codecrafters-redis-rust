@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::command::Command;
+use crate::db::stream::StreamEntryID;
 use crate::resp::RespValue;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -11,7 +12,7 @@ use self::store::RedisStore;
 
 pub mod master;
 pub mod replica;
-pub mod store;
+mod store;
 
 #[derive(Clone)]
 pub(crate) struct MasterInfo {
@@ -151,4 +152,16 @@ async fn handle_type(socket: &mut TcpStream, store: &RedisStore, key: &Vec<u8>) 
         .await
         .map_or("none".to_string(), |t| t.to_string());
     send_simple_string(socket, &res).await;
+}
+
+async fn handle_xadd(
+    socket: &mut TcpStream,
+    store: &RedisStore,
+    key: &Vec<u8>,
+    entry_id: &StreamEntryID,
+    data: HashMap<Vec<u8>, Vec<u8>>,
+) {
+    eprintln!("Handling XADD");
+    store.xadd(key, entry_id, data).await;
+    send_bulk_string(socket, &entry_id.as_bytes()).await;
 }

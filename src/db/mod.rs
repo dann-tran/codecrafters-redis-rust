@@ -4,14 +4,20 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use self::stream::{RedisStream, StreamEntryID};
+
+pub(crate) mod stream;
+
 pub(crate) enum RedisValueType {
     String,
+    Stream,
 }
 
 impl fmt::Display for RedisValueType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             RedisValueType::String => "string",
+            RedisValueType::Stream => "stream",
         };
         write!(f, "{}", s)
     }
@@ -20,6 +26,7 @@ impl fmt::Display for RedisValueType {
 pub(crate) struct RedisDb {
     pub(crate) nonexpire_table: HashMap<Vec<u8>, Vec<u8>>,
     pub(crate) expire_table: HashMap<Vec<u8>, (Vec<u8>, SystemTime)>,
+    pub(crate) streams: HashMap<Vec<u8>, RedisStream>,
 }
 
 impl RedisDb {
@@ -117,13 +124,38 @@ impl RedisDb {
     }
 
     pub(crate) fn lookup_type(&mut self, key: &Vec<u8>) -> Option<RedisValueType> {
-        self.get(key).map(|_| RedisValueType::String)
+        self.get(key).map(|_| RedisValueType::String).or_else(|| {
+            if self.streams.contains_key(key) {
+                Some(RedisValueType::Stream)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub(crate) fn xadd(
+        &mut self,
+        key: &Vec<u8>,
+        entry_id: &StreamEntryID,
+        data: HashMap<Vec<u8>, Vec<u8>>,
+    ) {
+        match self.streams.get_mut(key) {
+            Some(stream) => {
+                stream.insert(entry_id, data);
+            }
+            None => {
+                let mut stream = RedisStream::new();
+                stream.insert(entry_id, data);
+                self.streams.insert(key.clone(), stream);
+            }
+        }
     }
 
     pub fn new() -> Self {
         Self {
             nonexpire_table: HashMap::new(),
             expire_table: HashMap::new(),
+            streams: HashMap::new(),
         }
     }
 }
