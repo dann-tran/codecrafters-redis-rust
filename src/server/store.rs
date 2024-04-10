@@ -58,7 +58,8 @@ impl RedisStore {
         key: &Vec<u8>,
         entry_id: &StreamEntryID,
         data: HashMap<Vec<u8>, Vec<u8>>,
-    ) {
-        self.get_cur_db().lock().await.xadd(key, entry_id, data);
+    ) -> anyhow::Result<()> {
+        self.get_cur_db().lock().await.xadd(key, entry_id, data)?;
+        Ok(())
     }
 }

@@ -9,6 +9,7 @@ pub(crate) enum RespValue {
     Array(Vec<RespValue>),
     NullBulkString,
     Integer(i64),
+    SimpleError(String),
 }
 
 impl RespValue {
@@ -34,6 +35,7 @@ impl RespValue {
             }
             RespValue::NullBulkString => b"$-1\r\n".into(),
             RespValue::Integer(i) => format!(":{}\r\n", i).into_bytes(),
+            RespValue::SimpleError(s) => format!("-{}\r\n", s).into_bytes(),
         }
     }
 }

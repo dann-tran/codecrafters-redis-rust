@@ -54,6 +54,10 @@ async fn send_integer(socket: &mut TcpStream, res: i64) {
     send_resp(socket, &RespValue::Integer(res)).await;
 }
 
+async fn send_simple_error(socket: &mut TcpStream, msg: &str) {
+    send_resp(socket, &RespValue::SimpleError(msg.to_string())).await;
+}
+
 async fn send_cmd(socket: &mut TcpStream, cmd: &Command) {
     let send_buf = cmd.to_bytes();
     socket
@@ -162,6 +166,12 @@ async fn handle_xadd(
     data: HashMap<Vec<u8>, Vec<u8>>,
 ) {
     eprintln!("Handling XADD");
-    store.xadd(key, entry_id, data).await;
-    send_bulk_string(socket, &entry_id.as_bytes()).await;
+    match store.xadd(key, entry_id, data).await {
+        Ok(_) => {
+            send_bulk_string(socket, &entry_id.as_bytes()).await;
+        }
+        Err(err) => {
+            send_simple_error(socket, &err.to_string()).await;
+        }
+    }
 }

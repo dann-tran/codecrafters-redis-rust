@@ -138,17 +138,18 @@ impl RedisDb {
         key: &Vec<u8>,
         entry_id: &StreamEntryID,
         data: HashMap<Vec<u8>, Vec<u8>>,
-    ) {
+    ) -> anyhow::Result<()> {
         match self.streams.get_mut(key) {
             Some(stream) => {
-                stream.insert(entry_id, data);
+                stream.insert(entry_id, data)?;
             }
             None => {
                 let mut stream = RedisStream::new();
-                stream.insert(entry_id, data);
+                stream.insert(entry_id, data)?;
                 self.streams.insert(key.clone(), stream);
             }
-        }
+        };
+        Ok(())
     }
 
     pub fn new() -> Self {
