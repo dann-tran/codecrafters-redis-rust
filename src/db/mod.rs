@@ -136,7 +136,7 @@ impl RedisDb {
     pub(crate) fn xadd(
         &mut self,
         key: &Vec<u8>,
-        entry_id: ReqStreamEntryID,
+        entry_id: Option<ReqStreamEntryID>,
         data: HashMap<Vec<u8>, Vec<u8>>,
     ) -> anyhow::Result<StreamEntryID> {
         match self.streams.get_mut(key) {

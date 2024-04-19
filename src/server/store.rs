@@ -59,7 +59,7 @@ impl RedisStore {
     pub(crate) async fn xadd(
         &self,
         key: &Vec<u8>,
-        entry_id: ReqStreamEntryID,
+        entry_id: Option<ReqStreamEntryID>,
         data: HashMap<Vec<u8>, Vec<u8>>,
     ) -> anyhow::Result<StreamEntryID> {
         self.get_cur_db().lock().await.xadd(key, entry_id, data)

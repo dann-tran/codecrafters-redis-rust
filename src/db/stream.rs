@@ -43,50 +43,62 @@ fn increment_vecu8(x: &mut Vec<u8>) {
 }
 
 fn make_stream_entry_id(
-    req: ReqStreamEntryID,
+    req: Option<ReqStreamEntryID>,
     last_entry: &StreamEntryID,
 ) -> anyhow::Result<StreamEntryID> {
-    if req.millis == vec![b'0'] {
-        if let Some(seq_num) = &req.seq_num {
-            if *seq_num == vec![b'0'] {
-                return Err(anyhow::anyhow!(
-                    "ERR The ID specified in XADD must be greater than 0-0"
-                ));
+    match req {
+        Some(req) => {
+            if req.millis == vec![b'0'] {
+                if let Some(seq_num) = &req.seq_num {
+                    if *seq_num == vec![b'0'] {
+                        return Err(anyhow::anyhow!(
+                            "ERR The ID specified in XADD must be greater than 0-0"
+                        ));
+                    }
+                }
             }
+
+            let seq_num = match cmp_vecu8(&req.millis, &last_entry.millis) {
+                Ordering::Less => {
+                    return Err(anyhow::anyhow!(
+                        "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                    ));
+                }
+                Ordering::Equal => match req.seq_num {
+                    Some(seq_num) => match cmp_vecu8(&seq_num, &last_entry.seq_num) {
+                        Ordering::Greater => seq_num,
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                    "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                                ));
+                        }
+                    },
+                    None => {
+                        let mut seq_num = last_entry.seq_num.clone();
+                        increment_vecu8(&mut seq_num);
+                        seq_num
+                    }
+                },
+                Ordering::Greater => match req.seq_num {
+                    Some(seq_num) => seq_num,
+                    None => vec![b'0'],
+                },
+            };
+
+            Ok(StreamEntryID {
+                millis: req.millis,
+                seq_num,
+            })
+        }
+        None => {
+            let mut seq_num = last_entry.seq_num.clone();
+            increment_vecu8(&mut seq_num);
+            Ok(StreamEntryID {
+                millis: last_entry.millis.clone(),
+                seq_num,
+            })
         }
     }
-
-    let seq_num = match cmp_vecu8(&req.millis, &last_entry.millis) {
-        Ordering::Less => {
-            return Err(anyhow::anyhow!(
-                "ERR The ID specified in XADD is equal or smaller than the target stream top item"
-            ));
-        }
-        Ordering::Equal => match req.seq_num {
-            Some(seq_num) => match cmp_vecu8(&seq_num, &last_entry.seq_num) {
-                Ordering::Greater => seq_num,
-                _ => {
-                    return Err(anyhow::anyhow!(
-                            "ERR The ID specified in XADD is equal or smaller than the target stream top item"
-                        ));
-                }
-            },
-            None => {
-                let mut seq_num = last_entry.seq_num.clone();
-                increment_vecu8(&mut seq_num);
-                seq_num
-            }
-        },
-        Ordering::Greater => match req.seq_num {
-            Some(seq_num) => seq_num,
-            None => vec![b'0'],
-        },
-    };
-
-    Ok(StreamEntryID {
-        millis: req.millis,
-        seq_num,
-    })
 }
 
 pub(crate) struct RedisStream {
@@ -107,7 +119,7 @@ impl RedisStream {
 
     pub(crate) fn insert(
         &mut self,
-        entry_id: ReqStreamEntryID,
+        entry_id: Option<ReqStreamEntryID>,
         data: HashMap<Vec<u8>, Vec<u8>>,
     ) -> anyhow::Result<StreamEntryID> {
         let entry_id = make_stream_entry_id(entry_id, &mut self.last_entry)?;

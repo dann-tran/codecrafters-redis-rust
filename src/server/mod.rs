@@ -162,7 +162,7 @@ async fn handle_xadd(
     socket: &mut TcpStream,
     store: &RedisStore,
     key: &Vec<u8>,
-    entry_id: ReqStreamEntryID,
+    entry_id: Option<ReqStreamEntryID>,
     data: HashMap<Vec<u8>, Vec<u8>>,
 ) {
     eprintln!("Handling XADD");

@@ -51,7 +51,7 @@ pub(crate) enum Command {
     LookupType(Vec<u8>),
     XAdd {
         key: Vec<u8>,
-        entry_id: ReqStreamEntryID,
+        entry_id: Option<ReqStreamEntryID>,
         data: HashMap<Vec<u8>, Vec<u8>>,
     },
 }
@@ -366,35 +366,45 @@ impl Command {
                 let (key, _remaining) = remaining.split_first().context("Extract XADD key")?;
                 let (entry_id, _remaining) =
                     _remaining.split_first().context("Extract entry ID")?;
-                let (millis_bytes, seq_num_bytes) = entry_id.split_at(
-                    entry_id
-                        .iter()
-                        .position(|&c| c == b'-')
-                        .context("Find - in entry ID")?,
-                );
 
-                let mut millis = Vec::with_capacity(millis_bytes.len());
-                for &b in millis_bytes {
-                    if b >= b'0' && b <= b'9' {
-                        millis.push(b);
-                    } else {
-                        return Err(anyhow::anyhow!("Invalid entry ID: {:?}", entry_id));
-                    }
-                }
-
-                let seq_num_bytes = &seq_num_bytes[1..];
-                let seq_num = if *seq_num_bytes == vec![b'*'] {
+                let entry_id = if *entry_id == vec![b'*'] {
                     None
                 } else {
-                    let mut seq_num = Vec::with_capacity(seq_num_bytes.len());
-                    for &b in seq_num_bytes {
+                    let (millis_bytes, seq_num_bytes) = entry_id.split_at(
+                        entry_id
+                            .iter()
+                            .position(|&c| c == b'-')
+                            .context("Find - in entry ID")?,
+                    );
+
+                    let mut millis = Vec::with_capacity(millis_bytes.len());
+                    for &b in millis_bytes {
                         if b >= b'0' && b <= b'9' {
-                            seq_num.push(b);
+                            millis.push(b);
                         } else {
                             return Err(anyhow::anyhow!("Invalid entry ID: {:?}", entry_id));
                         }
                     }
-                    Some(seq_num)
+
+                    let seq_num_bytes = &seq_num_bytes[1..];
+                    let seq_num = if *seq_num_bytes == vec![b'*'] {
+                        None
+                    } else {
+                        let mut seq_num = Vec::with_capacity(seq_num_bytes.len());
+                        for &b in seq_num_bytes {
+                            if b >= b'0' && b <= b'9' {
+                                seq_num.push(b);
+                            } else {
+                                return Err(anyhow::anyhow!("Invalid entry ID: {:?}", entry_id));
+                            }
+                        }
+                        Some(seq_num)
+                    };
+
+                    Some(ReqStreamEntryID {
+                        millis: millis.to_vec(),
+                        seq_num: seq_num.map(|x| x.to_vec()),
+                    })
                 };
 
                 let data = HashMap::with_capacity(_remaining.len() / 2);
@@ -408,10 +418,7 @@ impl Command {
 
                 Command::XAdd {
                     key: key.clone(),
-                    entry_id: ReqStreamEntryID {
-                        millis: millis.to_vec(),
-                        seq_num: seq_num.map(|x| x.to_vec()),
-                    },
+                    entry_id,
                     data,
                 }
             }
