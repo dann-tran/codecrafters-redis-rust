@@ -2,37 +2,16 @@ use std::{cmp::Ordering, collections::HashMap};
 
 use crate::trie::Trie;
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone)]
+pub(crate) struct ReqStreamEntryID {
+    pub(crate) millis: Vec<u8>,
+    pub(crate) seq_num: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct StreamEntryID {
     pub(crate) millis: Vec<u8>,
     pub(crate) seq_num: Vec<u8>,
-}
-
-impl PartialEq for StreamEntryID {
-    fn eq(&self, other: &Self) -> bool {
-        self.millis == other.millis && self.seq_num == other.seq_num
-    }
-}
-
-impl PartialOrd for StreamEntryID {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for StreamEntryID {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.millis.len().cmp(&other.millis.len()) {
-            std::cmp::Ordering::Equal => match self.millis.cmp(&other.millis) {
-                std::cmp::Ordering::Equal => match self.seq_num.len().cmp(&other.seq_num.len()) {
-                    std::cmp::Ordering::Equal => self.seq_num.cmp(&other.seq_num),
-                    ord => ord,
-                },
-                ord => ord,
-            },
-            ord => ord,
-        }
-    }
 }
 
 impl StreamEntryID {
@@ -44,51 +23,102 @@ impl StreamEntryID {
         res
     }
 }
+
+fn cmp_vecu8(left: &Vec<u8>, right: &Vec<u8>) -> std::cmp::Ordering {
+    match left.len().cmp(&right.len()) {
+        Ordering::Equal => left.cmp(right),
+        o => o,
+    }
+}
+
+fn increment_vecu8(x: &mut Vec<u8>) {
+    for c in x.iter_mut().rev() {
+        if *c == b'9' {
+            *c = b'0';
+        } else {
+            *c += 1;
+            break;
+        }
+    }
+}
+
+fn make_stream_entry_id(
+    req: ReqStreamEntryID,
+    last_entry: &StreamEntryID,
+) -> anyhow::Result<StreamEntryID> {
+    if req.millis == vec![b'0'] {
+        if let Some(seq_num) = &req.seq_num {
+            if *seq_num == vec![b'0'] {
+                return Err(anyhow::anyhow!(
+                    "ERR The ID specified in XADD must be greater than 0-0"
+                ));
+            }
+        }
+    }
+
+    let seq_num = match cmp_vecu8(&req.millis, &last_entry.millis) {
+        Ordering::Less => {
+            return Err(anyhow::anyhow!(
+                "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+            ));
+        }
+        Ordering::Equal => match req.seq_num {
+            Some(seq_num) => match cmp_vecu8(&seq_num, &last_entry.seq_num) {
+                Ordering::Greater => seq_num,
+                _ => {
+                    return Err(anyhow::anyhow!(
+                            "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                        ));
+                }
+            },
+            None => {
+                let mut seq_num = last_entry.seq_num.clone();
+                increment_vecu8(&mut seq_num);
+                seq_num
+            }
+        },
+        Ordering::Greater => match req.seq_num {
+            Some(seq_num) => seq_num,
+            None => vec![b'0'],
+        },
+    };
+
+    Ok(StreamEntryID {
+        millis: req.millis,
+        seq_num,
+    })
+}
+
 pub(crate) struct RedisStream {
     root: Trie<Trie<HashMap<Vec<u8>, Vec<u8>>>>,
-    last_entry: Option<StreamEntryID>,
+    last_entry: StreamEntryID,
 }
 
 impl RedisStream {
     pub(crate) fn new() -> Self {
         Self {
             root: Trie::new(),
-            last_entry: None,
+            last_entry: StreamEntryID {
+                millis: vec![b'0'],
+                seq_num: vec![b'0'],
+            },
         }
     }
 
     pub(crate) fn insert(
         &mut self,
-        entry_id: &StreamEntryID,
+        entry_id: ReqStreamEntryID,
         data: HashMap<Vec<u8>, Vec<u8>>,
-    ) -> anyhow::Result<()> {
-        if *entry_id
-            == (StreamEntryID {
-                millis: vec![b'0'],
-                seq_num: vec![b'0'],
-            })
-        {
-            return Err(anyhow::anyhow!(
-                "ERR The ID specified in XADD must be greater than 0-0"
-            ));
-        }
-        if let Some(last_entry) = &self.last_entry {
-            if entry_id <= last_entry {
-                return Err(anyhow::anyhow!(
-                    "ERR The ID specified in XADD is equal or smaller than the target stream top item"
-                ));
-            }
-        }
-        self.last_entry = Some(entry_id.clone());
+    ) -> anyhow::Result<StreamEntryID> {
+        let entry_id = make_stream_entry_id(entry_id, &mut self.last_entry)?;
 
         if !self.root.contains_key(&entry_id.millis) {
             self.root.insert(&entry_id.millis, Trie::new());
         }
 
         let node = self.root.get_mut(&entry_id.millis).expect("Not None");
-
         node.insert(&entry_id.seq_num, data);
-
-        Ok(())
+        self.last_entry = entry_id.clone();
+        Ok(entry_id)
     }
 }

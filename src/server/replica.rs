@@ -58,7 +58,7 @@ impl RedisServerHandler for ReplicaServer {
                     entry_id,
                     data,
                 } => {
-                    handle_xadd(&mut socket, &self.store, &key, &entry_id, data).await;
+                    handle_xadd(&mut socket, &self.store, &key, entry_id, data).await;
                 }
                 c => {
                     panic!("Unsupported command: {:?}", c);

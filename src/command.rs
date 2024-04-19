@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::Duration};
 use anyhow::Context;
 
 use crate::{
-    db::stream::StreamEntryID,
+    db::stream::ReqStreamEntryID,
     resp::{decode_array_of_bulkstrings, RespValue},
 };
 
@@ -51,7 +51,7 @@ pub(crate) enum Command {
     LookupType(Vec<u8>),
     XAdd {
         key: Vec<u8>,
-        entry_id: StreamEntryID,
+        entry_id: ReqStreamEntryID,
         data: HashMap<Vec<u8>, Vec<u8>>,
     },
 }
@@ -383,14 +383,19 @@ impl Command {
                 }
 
                 let seq_num_bytes = &seq_num_bytes[1..];
-                let mut seq_num = Vec::with_capacity(seq_num_bytes.len());
-                for &b in seq_num_bytes {
-                    if b >= b'0' && b <= b'9' {
-                        seq_num.push(b);
-                    } else {
-                        return Err(anyhow::anyhow!("Invalid entry ID: {:?}", entry_id));
+                let seq_num = if *seq_num_bytes == vec![b'*'] {
+                    None
+                } else {
+                    let mut seq_num = Vec::with_capacity(seq_num_bytes.len());
+                    for &b in seq_num_bytes {
+                        if b >= b'0' && b <= b'9' {
+                            seq_num.push(b);
+                        } else {
+                            return Err(anyhow::anyhow!("Invalid entry ID: {:?}", entry_id));
+                        }
                     }
-                }
+                    Some(seq_num)
+                };
 
                 let data = HashMap::with_capacity(_remaining.len() / 2);
                 let data = _remaining.chunks_exact(2).fold(data, |mut acc, chunk| {
@@ -403,9 +408,9 @@ impl Command {
 
                 Command::XAdd {
                     key: key.clone(),
-                    entry_id: StreamEntryID {
+                    entry_id: ReqStreamEntryID {
                         millis: millis.to_vec(),
-                        seq_num: seq_num.to_vec(),
+                        seq_num: seq_num.map(|x| x.to_vec()),
                     },
                     data,
                 }

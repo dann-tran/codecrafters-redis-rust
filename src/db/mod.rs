@@ -4,7 +4,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use self::stream::{RedisStream, StreamEntryID};
+use self::stream::{RedisStream, ReqStreamEntryID, StreamEntryID};
 
 pub(crate) mod stream;
 
@@ -136,20 +136,18 @@ impl RedisDb {
     pub(crate) fn xadd(
         &mut self,
         key: &Vec<u8>,
-        entry_id: &StreamEntryID,
+        entry_id: ReqStreamEntryID,
         data: HashMap<Vec<u8>, Vec<u8>>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<StreamEntryID> {
         match self.streams.get_mut(key) {
-            Some(stream) => {
-                stream.insert(entry_id, data)?;
-            }
+            Some(stream) => stream.insert(entry_id, data),
             None => {
                 let mut stream = RedisStream::new();
-                stream.insert(entry_id, data)?;
+                let res = stream.insert(entry_id, data)?;
                 self.streams.insert(key.clone(), stream);
+                Ok(res)
             }
-        };
-        Ok(())
+        }
     }
 
     pub fn new() -> Self {

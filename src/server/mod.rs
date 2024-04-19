@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::command::Command;
-use crate::db::stream::StreamEntryID;
+use crate::db::stream::ReqStreamEntryID;
 use crate::resp::RespValue;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -162,13 +162,13 @@ async fn handle_xadd(
     socket: &mut TcpStream,
     store: &RedisStore,
     key: &Vec<u8>,
-    entry_id: &StreamEntryID,
+    entry_id: ReqStreamEntryID,
     data: HashMap<Vec<u8>, Vec<u8>>,
 ) {
     eprintln!("Handling XADD");
     match store.xadd(key, entry_id, data).await {
-        Ok(_) => {
-            send_bulk_string(socket, &entry_id.as_bytes()).await;
+        Ok(res) => {
+            send_bulk_string(socket, &res.as_bytes()).await;
         }
         Err(err) => {
             send_simple_error(socket, &err.to_string()).await;
