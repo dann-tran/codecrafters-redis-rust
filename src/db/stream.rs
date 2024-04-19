@@ -1,4 +1,8 @@
-use std::{cmp::Ordering, collections::HashMap};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::trie::Trie;
 
@@ -91,12 +95,25 @@ fn make_stream_entry_id(
             })
         }
         None => {
-            let mut seq_num = last_entry.seq_num.clone();
-            increment_vecu8(&mut seq_num);
-            Ok(StreamEntryID {
-                millis: last_entry.millis.clone(),
-                seq_num,
-            })
+            if last_entry.millis == vec![b'0'] && last_entry.seq_num == vec![b'0'] {
+                Ok(StreamEntryID {
+                    millis: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_millis()
+                        .to_string()
+                        .as_bytes()
+                        .to_vec(),
+                    seq_num: vec![b'0'],
+                })
+            } else {
+                let mut seq_num = last_entry.seq_num.clone();
+                increment_vecu8(&mut seq_num);
+                Ok(StreamEntryID {
+                    millis: last_entry.millis.clone(),
+                    seq_num,
+                })
+            }
         }
     }
 }
