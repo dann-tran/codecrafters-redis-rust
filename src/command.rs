@@ -54,11 +54,11 @@ pub(crate) enum Command {
         entry_id: Option<ReqStreamEntryID>,
         data: HashMap<Vec<u8>, Vec<u8>>,
     },
-    // XRange {
-    //     key: Vec<u8>,
-    //     start: StreamEntryID,
-    //     end: StreamEntryID,
-    // },
+    XRange {
+        key: Vec<u8>,
+        start: StreamEntryID,
+        end: StreamEntryID,
+    },
 }
 
 impl Command {
@@ -415,53 +415,72 @@ impl Command {
                     entry_id,
                     data,
                 }
-            } // b"xrange" => {
-            //     let (key, _remaining) = remaining.split_first().context("Extract XRANGE key")?;
-            //     let (start, _remaining) = _remaining
-            //         .split_first()
-            //         .context("Extract XRANGE start argument")?;
+            }
+            b"xrange" => {
+                let (key, _remaining) = remaining.split_first().context("Extract XRANGE key")?;
+                let (start, _remaining) = _remaining
+                    .split_first()
+                    .context("Extract XRANGE start argument")?;
 
-            //     let start = match start.iter().position(|&c| c == b'-') {
-            //         Some(idx) => {
-            //             let (millis, seq_num) = start.split_at(idx);
-            //             let seq_num = &seq_num[1..];
-            //             StreamEntryID {
-            //                 millis: millis.to_vec(),
-            //                 seq_num: seq_num.to_vec(),
-            //             }
-            //         }
-            //         None => StreamEntryID {
-            //             millis: start.clone(),
-            //             seq_num: u64::MIN.to_string().as_bytes().to_vec(),
-            //         },
-            //     };
+                let start = match start.iter().position(|&c| c == b'-') {
+                    Some(idx) => {
+                        let (millis, seq_num) = start.split_at(idx);
+                        let seq_num = &seq_num[1..];
+                        StreamEntryID {
+                            millis: std::str::from_utf8(millis)
+                                .context("UTF-8 decode millis")?
+                                .parse()
+                                .context("Convert millis string to u64")?,
+                            seq_num: std::str::from_utf8(seq_num)
+                                .context("UTF-8 decode seq_num")?
+                                .parse()
+                                .context("Convert seq_num string to u64")?,
+                        }
+                    }
+                    None => StreamEntryID {
+                        millis: std::str::from_utf8(start)
+                            .context("UTF-8 decode millis")?
+                            .parse()
+                            .context("Convert millis string to u64")?,
+                        seq_num: u64::MIN,
+                    },
+                };
 
-            //     let (end, _remaining) = _remaining
-            //         .split_first()
-            //         .context("Extract XRANGE end argument")?;
-            //     let end = match end.iter().position(|&c| c == b'-') {
-            //         Some(idx) => {
-            //             let (millis, seq_num) = end.split_at(idx);
-            //             let seq_num = &seq_num[1..];
-            //             StreamEntryID {
-            //                 millis: millis.to_vec(),
-            //                 seq_num: seq_num.to_vec(),
-            //             }
-            //         }
-            //         None => StreamEntryID {
-            //             millis: end.clone(),
-            //             seq_num: u64::MAX.to_string().as_bytes().to_vec(),
-            //         },
-            //     };
+                let (end, _remaining) = _remaining
+                    .split_first()
+                    .context("Extract XRANGE end argument")?;
+                let end = match end.iter().position(|&c| c == b'-') {
+                    Some(idx) => {
+                        let (millis, seq_num) = end.split_at(idx);
+                        let seq_num = &seq_num[1..];
+                        StreamEntryID {
+                            millis: std::str::from_utf8(millis)
+                                .context("UTF-8 decode millis")?
+                                .parse()
+                                .context("Convert millis string to u64")?,
+                            seq_num: std::str::from_utf8(seq_num)
+                                .context("UTF-8 decode seq_num")?
+                                .parse()
+                                .context("Convert seq_num string to u64")?,
+                        }
+                    }
+                    None => StreamEntryID {
+                        millis: std::str::from_utf8(end)
+                            .context("UTF-8 decode millis")?
+                            .parse()
+                            .context("Convert millis string to u64")?,
+                        seq_num: u64::MAX,
+                    },
+                };
 
-            //     remaining = _remaining;
+                remaining = _remaining;
 
-            //     Command::XRange {
-            //         key: key.clone(),
-            //         start,
-            //         end,
-            //     }
-            // }
+                Command::XRange {
+                    key: key.clone(),
+                    start,
+                    end,
+                }
+            }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
         };
 

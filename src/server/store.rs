@@ -65,12 +65,12 @@ impl RedisStore {
         self.get_cur_db().lock().await.xadd(key, entry_id, data)
     }
 
-    // pub(crate) async fn xrange(
-    //     &self,
-    //     key: &Vec<u8>,
-    //     start: StreamEntryID,
-    //     end: StreamEntryID,
-    // ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
-    //     self.get_cur_db().lock().await.xrange(key, start, end)
-    // }
+    pub(crate) async fn xrange(
+        &self,
+        key: &Vec<u8>,
+        start: StreamEntryID,
+        end: StreamEntryID,
+    ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        self.get_cur_db().lock().await.xrange(key, start, end)
+    }
 }

@@ -151,16 +151,16 @@ impl RedisDb {
         }
     }
 
-    // pub(crate) fn xrange(
-    //     &self,
-    //     key: &Vec<u8>,
-    //     start: StreamEntryID,
-    //     end: StreamEntryID,
-    // ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
-    //     self.streams
-    //         .get(key)
-    //         .map_or_else(|| vec![], |stream| stream.xrange(start, end))
-    // }
+    pub(crate) fn xrange(
+        &self,
+        key: &Vec<u8>,
+        start: StreamEntryID,
+        end: StreamEntryID,
+    ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        self.streams
+            .get(key)
+            .map_or_else(|| vec![], |stream| stream.xrange(start, end))
+    }
 
     pub fn new() -> Self {
         Self {

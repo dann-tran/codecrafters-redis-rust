@@ -11,46 +11,39 @@ impl<T> TrieNode<T> {
         }
     }
 
-    // pub(crate) fn get_all(&self) -> Vec<(u64, &T)> {
-    //     // DFS
-    //     let mut data = Vec::new();
-    //     if let Some(v) = &self.value {
-    //         data.push((vec![], v));
-    //     }
+    pub(crate) fn get_all(&self) -> Vec<(Vec<u8>, &T)> {
+        // DFS
+        let mut data = Vec::new();
+        if let Some(v) = &self.value {
+            data.push((vec![], v));
+        }
 
-    //     let mut stack = Vec::new();
-    //     for idx in (0..10).rev() {
-    //         if let Some(n) = &self.children[idx] {
-    //             stack.push((vec![b'0' + idx as u8], n));
-    //         }
-    //     }
+        let mut stack = Vec::new();
+        for idx in (0u8..16).rev() {
+            if let Some(n) = &self.children[idx as usize] {
+                stack.push((vec![idx], n));
+            }
+        }
 
-    //     while let Some((chars, n)) = stack.pop() {
-    //         if let Some(v) = &n.value {
-    //             data.push((chars.clone(), v));
-    //         }
-    //         for idx in (0..10).rev() {
-    //             if let Some(n) = &n.children[idx] {
-    //                 let mut _chars = chars.clone();
-    //                 _chars.push(b'0' + idx as u8);
-    //                 stack.push((_chars, n));
-    //             }
-    //         }
-    //     }
+        while let Some((chars_u4, n)) = stack.pop() {
+            if let Some(v) = &n.value {
+                data.push((chars_u4.clone(), v));
+            }
+            for _idx in (0u8..16).rev() {
+                if let Some(n) = &n.children[_idx as usize] {
+                    let mut _chars_u4 = chars_u4.clone();
+                    _chars_u4.push(_idx);
+                    stack.push((_chars_u4, n));
+                }
+            }
+        }
 
-    //     data
-    // }
+        data
+    }
 }
 
 pub(crate) struct Trie<T> {
     root: TrieNode<T>,
-}
-
-fn byte2idx(b: u8) -> usize {
-    if b < b'0' || b > b'9' {
-        panic!("Expect numeric byte, found: {b}");
-    }
-    (b - b'0').into()
 }
 
 fn u64_to_u4s(val: u64) -> Vec<u8> {
@@ -113,189 +106,225 @@ impl<T> Trie<T> {
         node.value.is_some()
     }
 
-    // pub(crate) fn get_all(&self) -> Vec<(u64, &T)> {
-    //     self.root.get_all()
-    // }
+    pub(crate) fn get_range_incl(&self, start: u64, end: u64) -> Vec<(u64, &T)> {
+        eprintln!("Get range inclusive: {start} {end}");
+        // Assumptions: start <= end
+        let mut node = &self.root;
+        let start_iter = u64_to_u4s(start).into_iter();
+        let end_iter = u64_to_u4s(end).into_iter();
+        let mut cpair_u4_iter = start_iter.zip(end_iter);
+        let mut common_chars_u4 = 0u64;
+        let mut cpair_u4 = None;
 
-    // pub(crate) fn get_range_incl(
-    //     &self,
-    //     start: Option<&[u8]>,
-    //     end: Option<&[u8]>,
-    // ) -> Vec<(Vec<u8>, &T)> {
-    //     eprintln!("Get range inclusive: {start:?} {end:?}");
-    //     // Assumptions:
-    //     // 1. start, end, and all millisecondsTime of entry IDs have the same number of digits
-    //     // 2. start <= end
-    //     let mut node = &self.root;
-    //     let start_iter = start.map_or_else(
-    //         || std::iter::empty::<&[u8]>() as std::slice::Iter<'_, u8>,
-    //         |start| start.iter(),
-    //     );
-    //     let mut cpair_iter = start.iter().zip(end.iter());
-    //     let mut common_chars = Vec::new();
-    //     let mut cpair = None;
+        // find first u4 char that differs in start and end
+        while let Some((start_char_u4, end_char_u4)) = cpair_u4_iter.next() {
+            if start_char_u4 != end_char_u4 {
+                cpair_u4 = Some((start_char_u4, end_char_u4));
+                break;
+            }
+            common_chars_u4 = common_chars_u4 << 4 + start_char_u4;
+            let idx = start_char_u4 as usize;
+            match &node.children[idx] {
+                Some(n) => {
+                    node = n.as_ref();
+                }
+                None => {
+                    return vec![];
+                }
+            }
+        }
 
-    //     while let Some((&start_c, &end_c)) = cpair_iter.next() {
-    //         if start_c != end_c {
-    //             cpair = Some((start_c, end_c));
-    //             break;
-    //         }
-    //         common_chars.push(start_c);
-    //         let idx = byte2idx(start_c);
-    //         match &node.children[idx] {
-    //             Some(n) => {
-    //                 node = n.as_ref();
-    //             }
-    //             None => {
-    //                 return vec![];
-    //             }
-    //         }
-    //     }
+        match cpair_u4 {
+            Some((start_char_u4, end_char_u4)) => {
+                let common_node = node;
+                let mut data = Vec::new();
 
-    //     match cpair {
-    //         Some((mut start_c, mut end_c)) => {
-    //             let common_node = node;
-    //             let mut data = Vec::new();
-    //             let (start_chars, end_chars) = cpair_iter.fold(
-    //                 (Vec::new(), Vec::new()),
-    //                 |(mut start_chars, mut end_chars), (&start_c, &end_c)| {
-    //                     start_chars.push(start_c);
-    //                     end_chars.push(end_c);
-    //                     (start_chars, end_chars)
-    //                 },
-    //             );
+                let (start_chars_u4, end_chars_u4) = cpair_u4_iter.fold(
+                    (Vec::with_capacity(16), Vec::with_capacity(16)),
+                    |(mut start_chars, mut end_chars), (start_c, end_c)| {
+                        start_chars.push(start_c);
+                        end_chars.push(end_c);
+                        (start_chars, end_chars)
+                    },
+                );
 
-    //             let mut depth_delta = 0usize;
-    //             let mut stack = Vec::new();
-    //             let mut start_iter = start_chars.iter();
-    //             loop {
-    //                 common_chars.push(start_c);
-    //                 depth_delta += 1;
+                // collect values along the paths to start node
+                let mut depth_delta = 0usize;
+                let mut stack = Vec::new();
+                let mut start_iter = start_chars_u4.into_iter();
+                let mut node = common_node;
+                let mut char_u4 = start_char_u4;
+                loop {
+                    common_chars_u4 = (common_chars_u4 << 4) + char_u4 as u64;
+                    depth_delta += 1;
 
-    //                 let mut idx = byte2idx(start_c);
-    //                 while idx < 10 && node.children[idx].is_none() {
-    //                     idx += 1;
-    //                 }
+                    node = match node.children[char_u4 as usize..]
+                        .iter()
+                        .find(|&n| n.is_some())
+                    {
+                        Some(n) => n.as_ref().expect("Not None"),
+                        None => {
+                            break;
+                        }
+                    };
 
-    //                 if idx < 10 {
-    //                     match &node.children[idx] {
-    //                         Some(n) => {
-    //                             for idx in ((idx + 1)..10).rev() {
-    //                                 if let Some(n) = &node.children[idx] {
-    //                                     stack.push((common_chars.clone(), n));
-    //                                 }
-    //                             }
+                    for idx in ((char_u4 + 1)..16).rev() {
+                        if let Some(n) = &node.children[idx as usize] {
+                            stack.push((common_chars_u4, n));
+                        }
+                    }
 
-    //                             node = n.as_ref();
-    //                             match start_iter.next() {
-    //                                 Some(&c) => {
-    //                                     start_c = c;
-    //                                 }
-    //                                 None => {
-    //                                     if let Some(v) = &node.value {
-    //                                         data.push((common_chars.clone(), v));
-    //                                     }
-    //                                 }
-    //                             }
-    //                         }
-    //                         None => {
-    //                             break;
-    //                         }
-    //                     }
-    //                 }
-    //             }
+                    if let Some(v) = &node.value {
+                        data.push((common_chars_u4, v));
+                    }
+                    match start_iter.next() {
+                        Some(c) => {
+                            char_u4 = c;
+                        }
+                        None => {
+                            break;
+                        }
+                    }
+                }
 
-    //             while let Some((chars, n)) = stack.pop() {
-    //                 let mut items = n
-    //                     .get_all()
-    //                     .into_iter()
-    //                     .map(|(mut _chars, v)| {
-    //                         let mut chars = chars.clone();
-    //                         chars.append(&mut _chars);
-    //                         (chars, v)
-    //                     })
-    //                     .collect();
-    //                 data.append(&mut items);
-    //             }
+                while let Some((chars_u4, n)) = stack.pop() {
+                    let mut items = n
+                        .get_all()
+                        .into_iter()
+                        .map(|(_chars, v)| {
+                            (
+                                (chars_u4 << (4 * _chars.len()))
+                                    + _chars.into_iter().fold(0u64, |acc, c| acc << 4 + c),
+                                v,
+                            )
+                        })
+                        .collect();
+                    data.append(&mut items);
+                }
 
-    //             for _ in 0..depth_delta {
-    //                 common_chars.pop();
-    //             }
-    //             for c in (start_c + 1)..end_c {
-    //                 if let Some(n) = &common_node.children[byte2idx(c)] {
-    //                     common_chars.push(c);
+                // collect values after the divergence point, between the paths to start and end nodes
+                common_chars_u4 = common_chars_u4 >> (4 * depth_delta);
+                for c in (start_char_u4 + 1)..end_char_u4 {
+                    if let Some(n) = &common_node.children[c as usize] {
+                        common_chars_u4 = (common_chars_u4 << 4) + c as u64;
 
-    //                     let mut items = n
-    //                         .get_all()
-    //                         .into_iter()
-    //                         .map(|(mut _chars, v)| {
-    //                             let mut chars = common_chars.clone();
-    //                             chars.append(&mut _chars);
-    //                             (chars, v)
-    //                         })
-    //                         .collect();
-    //                     data.append(&mut items);
+                        let mut items = n
+                            .get_all()
+                            .into_iter()
+                            .map(|(_chars, v)| {
+                                (
+                                    (common_chars_u4 << (4 * _chars.len()))
+                                        + _chars.into_iter().fold(0u64, |acc, c| acc << 4 + c),
+                                    v,
+                                )
+                            })
+                            .collect();
+                        data.append(&mut items);
 
-    //                     common_chars.pop();
-    //                 }
-    //             }
+                        common_chars_u4 = common_chars_u4 >> 4;
+                    }
+                }
 
-    //             let mut node = common_node;
-    //             let mut end_iter = end_chars.iter();
-    //             loop {
-    //                 common_chars.push(end_c);
+                // collect values on the path to end node
+                let mut node = common_node;
+                let mut end_iter = end_chars_u4.iter();
+                let mut char_u4 = end_char_u4;
+                loop {
+                    common_chars_u4 = (common_chars_u4 << 4) + char_u4 as u64;
+                    node = if let Some(n) = &node.children[char_u4 as usize] {
+                        n.as_ref()
+                    } else {
+                        break;
+                    };
 
-    //                 for c in b'0'..end_c {
-    //                     if let Some(n) = &node.children[byte2idx(c)] {
-    //                         common_chars.push(c);
+                    for c in 0..char_u4 {
+                        if let Some(n) = &node.children[c as usize] {
+                            common_chars_u4 = (common_chars_u4 << 4) + c as u64;
 
-    //                         let mut items = n
-    //                             .get_all()
-    //                             .into_iter()
-    //                             .map(|(mut _chars, v)| {
-    //                                 let mut chars = common_chars.clone();
-    //                                 chars.append(&mut _chars);
-    //                                 (chars, v)
-    //                             })
-    //                             .collect();
-    //                         data.append(&mut items);
+                            let mut items = n
+                                .get_all()
+                                .into_iter()
+                                .map(|(mut _chars, v)| {
+                                    (
+                                        (common_chars_u4 << (4 * _chars.len()))
+                                            + _chars.into_iter().fold(0u64, |acc, c| acc << 4 + c),
+                                        v,
+                                    )
+                                })
+                                .collect();
+                            data.append(&mut items);
 
-    //                         common_chars.pop();
-    //                     }
-    //                 }
+                            common_chars_u4 = common_chars_u4 >> 4;
+                        }
+                    }
 
-    //                 let idx = byte2idx(end_c);
-    //                 match &node.children[idx] {
-    //                     Some(n) => {
-    //                         node = n.as_ref();
-    //                         match end_iter.next() {
-    //                             Some(&c) => {
-    //                                 end_c = c;
-    //                             }
-    //                             None => {
-    //                                 if let Some(v) = &node.value {
-    //                                     data.push((common_chars.clone(), v));
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                     None => {
-    //                         break;
-    //                     }
-    //                 }
-    //             }
+                    if let Some(v) = &node.value {
+                        data.push((common_chars_u4.clone(), v));
+                    }
 
-    //             data
-    //         }
-    //         None => node
-    //             .get_all()
-    //             .into_iter()
-    //             .map(|(mut chars, v)| {
-    //                 let mut _chars = common_chars.clone();
-    //                 _chars.append(&mut chars);
-    //                 (_chars, v)
-    //             })
-    //             .collect(),
-    //     }
-    // }
+                    match end_iter.next() {
+                        Some(&c) => {
+                            char_u4 = c;
+                        }
+                        None => {
+                            break;
+                        }
+                    }
+                }
+
+                data
+            }
+            None => node
+                .get_all()
+                .into_iter()
+                .map(|(chars, v)| {
+                    (
+                        (common_chars_u4 << (4 * chars.len()))
+                            + chars.into_iter().fold(0u64, |acc, c| acc << 4 + c),
+                        v,
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_trie_getall() {
+        let mut trie = Trie::new();
+        trie.insert(2, "two".to_string());
+        trie.insert(16, "sixteen".to_string());
+
+        let actual = trie.root.get_all();
+
+        assert_eq!(actual.len(), 2);
+        let (key0, val0) = &actual[0];
+        assert_eq!(*key0, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        assert_eq!(*val0, "two");
+        let (key1, val1) = &actual[1];
+        assert_eq!(*key1, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
+        assert_eq!(*val1, "sixteen");
+    }
+
+    #[test]
+    fn test_trie_getrangeinclusive() {
+        let mut trie = Trie::new();
+        trie.insert(2, "test".to_string());
+        trie.insert(4, "test".to_string());
+        trie.insert(8, "test".to_string());
+
+        let actual = trie.get_range_incl(2, 5);
+
+        assert_eq!(actual.len(), 2, "{:?}", actual);
+        let (key0, val0) = &actual[0];
+        assert_eq!(*key0, 2);
+        assert_eq!(*val0, "test");
+        let (key1, val1) = &actual[1];
+        assert_eq!(*key1, 4);
+        assert_eq!(*val1, "test");
+    }
 }

@@ -259,26 +259,27 @@ impl RedisServerHandler for MasterServer {
                             send_simple_error(&mut socket, &err.to_string()).await;
                         }
                     }
-                } // Command::XRange { key, start, end } => {
-                  //     eprintln!("Handling XRANGE");
-                  //     let data = self.store.xrange(&key, start, end).await;
-                  //     let resp = RespValue::Array(
-                  //         data.into_iter()
-                  //             .map(|(entry_id, entry_data)| {
-                  //                 RespValue::Array(vec![
-                  //                     RespValue::BulkString(entry_id),
-                  //                     RespValue::Array(
-                  //                         entry_data
-                  //                             .into_iter()
-                  //                             .map(|x| RespValue::BulkString(x))
-                  //                             .collect(),
-                  //                     ),
-                  //                 ])
-                  //             })
-                  //             .collect(),
-                  //     );
-                  //     send_resp(&mut socket, &resp).await;
-                  // }
+                }
+                Command::XRange { key, start, end } => {
+                    eprintln!("Handling XRANGE");
+                    let data = self.store.xrange(&key, start, end).await;
+                    let resp = RespValue::Array(
+                        data.into_iter()
+                            .map(|(entry_id, entry_data)| {
+                                RespValue::Array(vec![
+                                    RespValue::BulkString(entry_id),
+                                    RespValue::Array(
+                                        entry_data
+                                            .into_iter()
+                                            .map(|x| RespValue::BulkString(x))
+                                            .collect(),
+                                    ),
+                                ])
+                            })
+                            .collect(),
+                    );
+                    send_resp(&mut socket, &resp).await;
+                }
             };
         }
     }

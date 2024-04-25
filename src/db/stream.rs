@@ -126,40 +126,52 @@ impl RedisStream {
         Ok(entry_id)
     }
 
-    // pub(crate) fn xrange(
-    //     &self,
-    //     start: StreamEntryID,
-    //     end: StreamEntryID,
-    // ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
-    //     self.root
-    //         .get_range_incl(&start.millis, &end.millis)
-    //         .into_iter()
-    //         .flat_map(|(millis, trie)| {
-    //             let entries = if millis == start.millis {
-    //                 trie.get_range_incl(&start.seq_num, &u64::MAX.to_string().as_bytes())
-    //             } else if millis == end.millis {
-    //                 trie.get_range_incl(&u64::MIN.to_string().as_bytes(), &end.seq_num)
-    //             } else {
-    //                 trie.get_all()
-    //             };
+    pub(crate) fn xrange(
+        &self,
+        start: StreamEntryID,
+        end: StreamEntryID,
+    ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        self.root
+            .get_range_incl(start.millis, end.millis)
+            .into_iter()
+            .flat_map(|(millis, trie)| {
+                let start_seq_num = if millis == end.millis {
+                    u64::MIN
+                } else {
+                    start.seq_num
+                };
+                let end_seq_num = if millis == start.millis {
+                    u64::MAX
+                } else {
+                    end.seq_num
+                };
+                let entries = trie.get_range_incl(start_seq_num, end_seq_num);
 
-    //             entries
-    //                 .into_iter()
-    //                 .map(|(mut seq_num, v)| {
-    //                     let mut entry_id = millis.clone();
-    //                     entry_id.push(b'-');
-    //                     entry_id.append(&mut seq_num);
+                entries
+                    .into_iter()
+                    .map(|(seq_num, v)| {
+                        let entry_id = format!("{}-{}", millis.to_string(), seq_num.to_string())
+                            .as_bytes()
+                            .to_vec();
 
-    //                     let mut kv_pairs = Vec::with_capacity(v.len() * 2);
-    //                     for (k, v) in v.iter() {
-    //                         kv_pairs.push(k.clone());
-    //                         kv_pairs.push(v.clone());
-    //                     }
+                        let mut kv_pairs = Vec::with_capacity(v.len() * 2);
+                        for (k, v) in v.iter() {
+                            kv_pairs.push(k.clone());
+                            kv_pairs.push(v.clone());
+                        }
 
-    //                     (entry_id, kv_pairs)
-    //                 })
-    //                 .collect::<Vec<(Vec<u8>, Vec<Vec<u8>>)>>()
-    //         })
-    //         .collect()
-    // }
+                        (entry_id, kv_pairs)
+                    })
+                    .collect::<Vec<(Vec<u8>, Vec<Vec<u8>>)>>()
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // use super::*;
+
+    #[test]
+    fn test_stream_xrange() {}
 }
