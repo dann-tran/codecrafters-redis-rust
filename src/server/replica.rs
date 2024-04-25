@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::{
-    assert_recv_simple_string, handle_echo, handle_get, handle_ping, handle_type, handle_xadd,
+    assert_recv_simple_string, handle_echo, handle_get, handle_ping, handle_type,
     store::RedisStore, MasterInfo, RedisServerHandler,
 };
 
@@ -53,15 +53,8 @@ impl RedisServerHandler for ReplicaServer {
                 Command::LookupType(key) => {
                     handle_type(&mut socket, &self.store, &key).await;
                 }
-                Command::XAdd {
-                    key,
-                    entry_id,
-                    data,
-                } => {
-                    handle_xadd(&mut socket, &self.store, &key, entry_id, data).await;
-                }
                 c => {
-                    panic!("Unsupported command: {:?}", c);
+                    panic!("Replica does not support command: {:?}", c);
                 }
             }
         }

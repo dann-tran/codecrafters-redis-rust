@@ -4,45 +4,29 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::trie::Trie;
+use super::trie::Trie;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReqStreamEntryID {
-    pub(crate) millis: Vec<u8>,
-    pub(crate) seq_num: Option<Vec<u8>>,
+    pub(crate) millis: u64,
+    pub(crate) seq_num: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct StreamEntryID {
-    pub(crate) millis: Vec<u8>,
-    pub(crate) seq_num: Vec<u8>,
+    pub(crate) millis: u64,
+    pub(crate) seq_num: u64,
 }
 
 impl StreamEntryID {
     pub(crate) fn as_bytes(&self) -> Vec<u8> {
-        let mut res = Vec::with_capacity(self.millis.len() + 1 + self.seq_num.len());
-        res.extend(&self.millis);
+        let mut millis = self.millis.to_string().as_bytes().to_vec();
+        let mut seq_num = self.seq_num.to_string().as_bytes().to_vec();
+        let mut res = Vec::with_capacity(millis.len() + 1 + seq_num.len());
+        res.append(&mut millis);
         res.push(b'-');
-        res.extend(&self.seq_num);
+        res.append(&mut seq_num);
         res
-    }
-}
-
-fn cmp_vecu8(left: &Vec<u8>, right: &Vec<u8>) -> std::cmp::Ordering {
-    match left.len().cmp(&right.len()) {
-        Ordering::Equal => left.cmp(right),
-        o => o,
-    }
-}
-
-fn increment_vecu8(x: &mut Vec<u8>) {
-    for c in x.iter_mut().rev() {
-        if *c == b'9' {
-            *c = b'0';
-        } else {
-            *c += 1;
-            break;
-        }
     }
 }
 
@@ -52,9 +36,9 @@ fn make_stream_entry_id(
 ) -> anyhow::Result<StreamEntryID> {
     match req {
         Some(req) => {
-            if req.millis == vec![b'0'] {
+            if req.millis == 0 {
                 if let Some(seq_num) = &req.seq_num {
-                    if *seq_num == vec![b'0'] {
+                    if *seq_num == 0 {
                         return Err(anyhow::anyhow!(
                             "ERR The ID specified in XADD must be greater than 0-0"
                         ));
@@ -62,14 +46,14 @@ fn make_stream_entry_id(
                 }
             }
 
-            let seq_num = match cmp_vecu8(&req.millis, &last_entry.millis) {
+            let seq_num = match req.millis.cmp(&last_entry.millis) {
                 Ordering::Less => {
                     return Err(anyhow::anyhow!(
                         "ERR The ID specified in XADD is equal or smaller than the target stream top item"
                     ));
                 }
                 Ordering::Equal => match req.seq_num {
-                    Some(seq_num) => match cmp_vecu8(&seq_num, &last_entry.seq_num) {
+                    Some(seq_num) => match seq_num.cmp(&last_entry.seq_num) {
                         Ordering::Greater => seq_num,
                         _ => {
                             return Err(anyhow::anyhow!(
@@ -77,15 +61,11 @@ fn make_stream_entry_id(
                                 ));
                         }
                     },
-                    None => {
-                        let mut seq_num = last_entry.seq_num.clone();
-                        increment_vecu8(&mut seq_num);
-                        seq_num
-                    }
+                    None => last_entry.seq_num + 1,
                 },
                 Ordering::Greater => match req.seq_num {
                     Some(seq_num) => seq_num,
-                    None => vec![b'0'],
+                    None => 0,
                 },
             };
 
@@ -95,23 +75,18 @@ fn make_stream_entry_id(
             })
         }
         None => {
-            if last_entry.millis == vec![b'0'] && last_entry.seq_num == vec![b'0'] {
+            if last_entry.millis == 0 && last_entry.seq_num == 0 {
                 Ok(StreamEntryID {
                     millis: SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .expect("Time went backwards")
-                        .as_millis()
-                        .to_string()
-                        .as_bytes()
-                        .to_vec(),
-                    seq_num: vec![b'0'],
+                        .as_millis() as u64,
+                    seq_num: 0,
                 })
             } else {
-                let mut seq_num = last_entry.seq_num.clone();
-                increment_vecu8(&mut seq_num);
                 Ok(StreamEntryID {
-                    millis: last_entry.millis.clone(),
-                    seq_num,
+                    millis: last_entry.millis,
+                    seq_num: last_entry.seq_num + 1,
                 })
             }
         }
@@ -128,8 +103,8 @@ impl RedisStream {
         Self {
             root: Trie::new(),
             last_entry: StreamEntryID {
-                millis: vec![b'0'],
-                seq_num: vec![b'0'],
+                millis: 0,
+                seq_num: 0,
             },
         }
     }
@@ -141,13 +116,50 @@ impl RedisStream {
     ) -> anyhow::Result<StreamEntryID> {
         let entry_id = make_stream_entry_id(entry_id, &mut self.last_entry)?;
 
-        if !self.root.contains_key(&entry_id.millis) {
-            self.root.insert(&entry_id.millis, Trie::new());
+        if !self.root.contains_key(entry_id.millis) {
+            self.root.insert(entry_id.millis, Trie::new());
         }
 
-        let node = self.root.get_mut(&entry_id.millis).expect("Not None");
-        node.insert(&entry_id.seq_num, data);
+        let node = self.root.get_mut(entry_id.millis).expect("Not None");
+        node.insert(entry_id.seq_num, data);
         self.last_entry = entry_id.clone();
         Ok(entry_id)
     }
+
+    // pub(crate) fn xrange(
+    //     &self,
+    //     start: StreamEntryID,
+    //     end: StreamEntryID,
+    // ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+    //     self.root
+    //         .get_range_incl(&start.millis, &end.millis)
+    //         .into_iter()
+    //         .flat_map(|(millis, trie)| {
+    //             let entries = if millis == start.millis {
+    //                 trie.get_range_incl(&start.seq_num, &u64::MAX.to_string().as_bytes())
+    //             } else if millis == end.millis {
+    //                 trie.get_range_incl(&u64::MIN.to_string().as_bytes(), &end.seq_num)
+    //             } else {
+    //                 trie.get_all()
+    //             };
+
+    //             entries
+    //                 .into_iter()
+    //                 .map(|(mut seq_num, v)| {
+    //                     let mut entry_id = millis.clone();
+    //                     entry_id.push(b'-');
+    //                     entry_id.append(&mut seq_num);
+
+    //                     let mut kv_pairs = Vec::with_capacity(v.len() * 2);
+    //                     for (k, v) in v.iter() {
+    //                         kv_pairs.push(k.clone());
+    //                         kv_pairs.push(v.clone());
+    //                     }
+
+    //                     (entry_id, kv_pairs)
+    //                 })
+    //                 .collect::<Vec<(Vec<u8>, Vec<Vec<u8>>)>>()
+    //         })
+    //         .collect()
+    // }
 }

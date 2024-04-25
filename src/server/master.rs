@@ -16,12 +16,14 @@ use crate::{
     db::RedisDb,
     rdb::parse_rdb,
     resp::RespValue,
-    server::{handle_info, send_cmd, send_integer, send_simple_string, store::RedisStore},
+    server::{
+        handle_info, send_bulk_string, send_cmd, send_integer, send_simple_error,
+        send_simple_string, store::RedisStore,
+    },
 };
 
 use super::{
-    handle_echo, handle_get, handle_ping, handle_type, handle_xadd, send_resp, MasterInfo,
-    RedisServerHandler,
+    handle_echo, handle_get, handle_ping, handle_type, send_resp, MasterInfo, RedisServerHandler,
 };
 
 #[derive(Clone)]
@@ -248,8 +250,35 @@ impl RedisServerHandler for MasterServer {
                     entry_id,
                     data,
                 } => {
-                    handle_xadd(&mut socket, &self.store, &key, entry_id, data).await;
-                }
+                    eprintln!("Handling XADD");
+                    match self.store.xadd(&key, entry_id, data).await {
+                        Ok(res) => {
+                            send_bulk_string(&mut socket, &res.as_bytes()).await;
+                        }
+                        Err(err) => {
+                            send_simple_error(&mut socket, &err.to_string()).await;
+                        }
+                    }
+                } // Command::XRange { key, start, end } => {
+                  //     eprintln!("Handling XRANGE");
+                  //     let data = self.store.xrange(&key, start, end).await;
+                  //     let resp = RespValue::Array(
+                  //         data.into_iter()
+                  //             .map(|(entry_id, entry_data)| {
+                  //                 RespValue::Array(vec![
+                  //                     RespValue::BulkString(entry_id),
+                  //                     RespValue::Array(
+                  //                         entry_data
+                  //                             .into_iter()
+                  //                             .map(|x| RespValue::BulkString(x))
+                  //                             .collect(),
+                  //                     ),
+                  //                 ])
+                  //             })
+                  //             .collect(),
+                  //     );
+                  //     send_resp(&mut socket, &resp).await;
+                  // }
             };
         }
     }

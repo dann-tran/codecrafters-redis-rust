@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::Duration};
 use anyhow::Context;
 
 use crate::{
-    db::stream::ReqStreamEntryID,
+    db::stream::{ReqStreamEntryID, StreamEntryID},
     resp::{decode_array_of_bulkstrings, RespValue},
 };
 
@@ -54,6 +54,11 @@ pub(crate) enum Command {
         entry_id: Option<ReqStreamEntryID>,
         data: HashMap<Vec<u8>, Vec<u8>>,
     },
+    // XRange {
+    //     key: Vec<u8>,
+    //     start: StreamEntryID,
+    //     end: StreamEntryID,
+    // },
 }
 
 impl Command {
@@ -377,34 +382,23 @@ impl Command {
                             .context("Find - in entry ID")?,
                     );
 
-                    let mut millis = Vec::with_capacity(millis_bytes.len());
-                    for &b in millis_bytes {
-                        if b >= b'0' && b <= b'9' {
-                            millis.push(b);
-                        } else {
-                            return Err(anyhow::anyhow!("Invalid entry ID: {:?}", entry_id));
-                        }
-                    }
+                    let millis = std::str::from_utf8(millis_bytes)
+                        .context("UTF-8 decode millis bytes")?
+                        .parse::<u64>()
+                        .context("Parse millis to u64")?;
 
                     let seq_num_bytes = &seq_num_bytes[1..];
                     let seq_num = if *seq_num_bytes == vec![b'*'] {
                         None
                     } else {
-                        let mut seq_num = Vec::with_capacity(seq_num_bytes.len());
-                        for &b in seq_num_bytes {
-                            if b >= b'0' && b <= b'9' {
-                                seq_num.push(b);
-                            } else {
-                                return Err(anyhow::anyhow!("Invalid entry ID: {:?}", entry_id));
-                            }
-                        }
+                        let seq_num = std::str::from_utf8(seq_num_bytes)
+                            .context("UTF-8 decode seq_num bytes")?
+                            .parse::<u64>()
+                            .context("Parse seq_num to u64")?;
                         Some(seq_num)
                     };
 
-                    Some(ReqStreamEntryID {
-                        millis: millis.to_vec(),
-                        seq_num: seq_num.map(|x| x.to_vec()),
-                    })
+                    Some(ReqStreamEntryID { millis, seq_num })
                 };
 
                 let data = HashMap::with_capacity(_remaining.len() / 2);
@@ -421,7 +415,53 @@ impl Command {
                     entry_id,
                     data,
                 }
-            }
+            } // b"xrange" => {
+            //     let (key, _remaining) = remaining.split_first().context("Extract XRANGE key")?;
+            //     let (start, _remaining) = _remaining
+            //         .split_first()
+            //         .context("Extract XRANGE start argument")?;
+
+            //     let start = match start.iter().position(|&c| c == b'-') {
+            //         Some(idx) => {
+            //             let (millis, seq_num) = start.split_at(idx);
+            //             let seq_num = &seq_num[1..];
+            //             StreamEntryID {
+            //                 millis: millis.to_vec(),
+            //                 seq_num: seq_num.to_vec(),
+            //             }
+            //         }
+            //         None => StreamEntryID {
+            //             millis: start.clone(),
+            //             seq_num: u64::MIN.to_string().as_bytes().to_vec(),
+            //         },
+            //     };
+
+            //     let (end, _remaining) = _remaining
+            //         .split_first()
+            //         .context("Extract XRANGE end argument")?;
+            //     let end = match end.iter().position(|&c| c == b'-') {
+            //         Some(idx) => {
+            //             let (millis, seq_num) = end.split_at(idx);
+            //             let seq_num = &seq_num[1..];
+            //             StreamEntryID {
+            //                 millis: millis.to_vec(),
+            //                 seq_num: seq_num.to_vec(),
+            //             }
+            //         }
+            //         None => StreamEntryID {
+            //             millis: end.clone(),
+            //             seq_num: u64::MAX.to_string().as_bytes().to_vec(),
+            //         },
+            //     };
+
+            //     remaining = _remaining;
+
+            //     Command::XRange {
+            //         key: key.clone(),
+            //         start,
+            //         end,
+            //     }
+            // }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
         };
 
