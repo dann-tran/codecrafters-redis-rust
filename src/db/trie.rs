@@ -6,7 +6,7 @@ struct TrieNode<T> {
     value: Option<T>,
 }
 
-impl<T> TrieNode<T> {
+impl<'a, T> TrieNode<T> {
     pub(crate) fn new() -> Self {
         Self {
             children: std::array::from_fn(|_| None),
@@ -113,8 +113,11 @@ impl<T> Trie<T> {
         node.value.is_some()
     }
 
-    pub(crate) fn get_range_incl(&self, start: u64, end: u64) -> Vec<(u64, &T)> {
-        // Assumptions: start <= end
+    fn traverse_to_common_node(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Option<(&TrieNode<T>, Option<(u8, u8)>, u64, Vec<u8>, Vec<u8>)> {
         let mut node = &self.root;
         let start_iter = u64_to_chars(start).into_iter();
         let end_iter = u64_to_chars(end).into_iter();
@@ -135,16 +138,188 @@ impl<T> Trie<T> {
                     node = n.as_ref();
                 }
                 None => {
-                    return vec![];
+                    return None;
                 }
             }
         }
 
+        let (start_chars, end_chars) = cpair_iter.fold(
+            (
+                Vec::with_capacity(CHARSET_SIZE),
+                Vec::with_capacity(CHARSET_SIZE),
+            ),
+            |(mut start_chars, mut end_chars), (start_c, end_c)| {
+                start_chars.push(start_c);
+                end_chars.push(end_c);
+                (start_chars, end_chars)
+            },
+        );
+
+        Some((node, cpair, common_chars, start_chars, end_chars))
+    }
+
+    fn collect_values_along_path_to_start<'a>(
+        &self,
+        common_node: &'a TrieNode<T>,
+        start_char: u8,
+        remaining_start_chars: Vec<u8>,
+        mut common_chars: u64,
+        data: &mut Vec<(u64, &'a T)>,
+    ) {
+        let mut stack = Vec::new();
+        let mut start_iter = remaining_start_chars.into_iter();
+        let mut node = common_node;
+        let mut char = start_char;
+        loop {
+            node = node.children[char as usize].as_ref().expect("Not None");
+            common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
+
+            for idx in ((char + 1) as usize..CHARSET_SIZE).rev() {
+                if let Some(n) = &node.children[idx] {
+                    stack.push((common_chars, n));
+                }
+            }
+
+            if let Some(v) = &node.value {
+                data.push((common_chars, v));
+            }
+            match start_iter.next() {
+                Some(c) => {
+                    char = match node.children[(c as usize)..CHARSET_SIZE]
+                        .iter()
+                        .position(|n| n.is_some())
+                    {
+                        Some(_c) => c + _c as u8,
+                        None => {
+                            break;
+                        }
+                    };
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+
+        while let Some((chars, n)) = stack.pop() {
+            let mut items = n
+                .get_all()
+                .into_iter()
+                .map(|(_chars, v)| {
+                    (
+                        (chars << (4 * _chars.len()))
+                            + _chars
+                                .into_iter()
+                                .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
+                        v,
+                    )
+                })
+                .collect();
+            data.append(&mut items);
+        }
+    }
+
+    fn collect_values_between_start_and_end<'a>(
+        &self,
+        common_node: &'a TrieNode<T>,
+        start_char: u8,
+        end_char: u8,
+        mut common_chars: u64,
+        data: &mut Vec<(u64, &'a T)>,
+    ) {
+        for c in (start_char + 1)..end_char {
+            if let Some(n) = &common_node.children[c as usize] {
+                common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
+
+                let mut items = n
+                    .get_all()
+                    .into_iter()
+                    .map(|(_chars, v)| {
+                        (
+                            (common_chars << (4 * _chars.len()))
+                                + _chars
+                                    .into_iter()
+                                    .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
+                            v,
+                        )
+                    })
+                    .collect();
+                data.append(&mut items);
+
+                common_chars = common_chars >> CHAR_BITSIZE;
+            }
+        }
+    }
+
+    fn collect_values_along_path_to_end<'a>(
+        &self,
+        common_node: &'a TrieNode<T>,
+        end_char: u8,
+        remaining_end_chars: Vec<u8>,
+        mut common_chars: u64,
+        data: &mut Vec<(u64, &'a T)>,
+    ) {
+        let mut node = common_node;
+        let mut end_iter = remaining_end_chars.iter();
+        let mut char = end_char;
+        loop {
+            node = if let Some(n) = &node.children[char as usize] {
+                n.as_ref()
+            } else {
+                break;
+            };
+            common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
+
+            for c in 0..char {
+                if let Some(n) = &node.children[c as usize] {
+                    common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
+
+                    let mut items = n
+                        .get_all()
+                        .into_iter()
+                        .map(|(mut _chars, v)| {
+                            (
+                                (common_chars << (4 * _chars.len()))
+                                    + _chars
+                                        .into_iter()
+                                        .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
+                                v,
+                            )
+                        })
+                        .collect();
+                    data.append(&mut items);
+
+                    common_chars = common_chars >> CHAR_BITSIZE;
+                }
+            }
+
+            if let Some(v) = &node.value {
+                data.push((common_chars.clone(), v));
+            }
+
+            match end_iter.next() {
+                Some(&c) => {
+                    char = c;
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn get_range_incl(&self, start: u64, end: u64) -> Vec<(u64, &T)> {
+        let (common_node, cpair, common_chars, remaining_start_chars, remaining_end_chars) =
+            match self.traverse_to_common_node(start, end) {
+                Some(args) => args,
+                None => return vec![],
+            };
+
         match cpair {
-            // these start_char and end_char should correspond to non-empty paths
             Some((start_char, end_char)) => {
                 // shift start_char to the first non-empty node
-                let start_char = match node.children[(start_char as usize)..=(end_char as usize)]
+                let start_char = match common_node.children
+                    [(start_char as usize)..=(end_char as usize)]
                     .iter()
                     .position(|n| n.is_some())
                 {
@@ -155,7 +330,8 @@ impl<T> Trie<T> {
                 };
 
                 // shift end_char to the first non-empty node
-                let end_char = match node.children[(start_char as usize)..=(end_char as usize)]
+                let end_char = match common_node.children
+                    [(start_char as usize)..=(end_char as usize)]
                     .iter()
                     .rev()
                     .position(|n| n.is_some())
@@ -164,160 +340,40 @@ impl<T> Trie<T> {
                     None => return vec![],
                 };
 
-                let common_node = node;
                 let mut data = Vec::new();
-
-                let (start_chars, end_chars) = cpair_iter.fold(
-                    (
-                        Vec::with_capacity(CHARSET_SIZE),
-                        Vec::with_capacity(CHARSET_SIZE),
-                    ),
-                    |(mut start_chars, mut end_chars), (start_c, end_c)| {
-                        start_chars.push(start_c);
-                        end_chars.push(end_c);
-                        (start_chars, end_chars)
-                    },
+                self.collect_values_along_path_to_start(
+                    common_node,
+                    start_char,
+                    remaining_start_chars,
+                    common_chars,
+                    &mut data,
+                );
+                self.collect_values_between_start_and_end(
+                    common_node,
+                    start_char,
+                    end_char,
+                    common_chars,
+                    &mut data,
                 );
 
-                // collect values along the paths to start node
-                let mut depth_delta = 0usize;
-                let mut stack = Vec::new();
-                let mut start_iter = start_chars.into_iter();
-                let mut node = common_node;
-                let mut char = start_char;
-                loop {
-                    node = node.children[char as usize].as_ref().expect("Not None");
-                    common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
-                    depth_delta += 1;
-
-                    for idx in ((char + 1) as usize..CHARSET_SIZE).rev() {
-                        if let Some(n) = &node.children[idx] {
-                            stack.push((common_chars, n));
-                        }
-                    }
-
-                    if let Some(v) = &node.value {
-                        data.push((common_chars, v));
-                    }
-                    match start_iter.next() {
-                        Some(c) => {
-                            char = match node.children[(c as usize)..CHARSET_SIZE]
-                                .iter()
-                                .position(|n| n.is_some())
-                            {
-                                Some(_c) => c + _c as u8,
-                                None => {
-                                    break;
-                                }
-                            };
-                        }
-                        None => {
-                            break;
-                        }
-                    }
-                }
-
-                while let Some((chars, n)) = stack.pop() {
-                    let mut items = n
-                        .get_all()
-                        .into_iter()
-                        .map(|(_chars, v)| {
-                            (
-                                (chars << (4 * _chars.len()))
-                                    + _chars
-                                        .into_iter()
-                                        .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
-                                v,
-                            )
-                        })
-                        .collect();
-                    data.append(&mut items);
-                }
-
                 if end_char > start_char {
-                    // collect values after the divergence point, between the paths to start and end nodes
-                    common_chars = common_chars >> (CHAR_BITSIZE * depth_delta);
-                    for c in (start_char + 1)..end_char {
-                        if let Some(n) = &common_node.children[c as usize] {
-                            common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
-
-                            let mut items = n
-                                .get_all()
-                                .into_iter()
-                                .map(|(_chars, v)| {
-                                    (
-                                        (common_chars << (4 * _chars.len()))
-                                            + _chars.into_iter().fold(0u64, |acc, c| {
-                                                (acc << CHAR_BITSIZE) + c as u64
-                                            }),
-                                        v,
-                                    )
-                                })
-                                .collect();
-                            data.append(&mut items);
-
-                            common_chars = common_chars >> CHAR_BITSIZE;
-                        }
-                    }
-
-                    // collect values on the path to end node
-                    let mut node = common_node;
-                    let mut end_iter = end_chars.iter();
-                    let mut char = end_char;
-                    loop {
-                        node = if let Some(n) = &node.children[char as usize] {
-                            n.as_ref()
-                        } else {
-                            break;
-                        };
-                        common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
-
-                        for c in 0..char {
-                            if let Some(n) = &node.children[c as usize] {
-                                common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
-
-                                let mut items = n
-                                    .get_all()
-                                    .into_iter()
-                                    .map(|(mut _chars, v)| {
-                                        (
-                                            (common_chars << (4 * _chars.len()))
-                                                + _chars.into_iter().fold(0u64, |acc, c| {
-                                                    (acc << CHAR_BITSIZE) + c as u64
-                                                }),
-                                            v,
-                                        )
-                                    })
-                                    .collect();
-                                data.append(&mut items);
-
-                                common_chars = common_chars >> CHAR_BITSIZE;
-                            }
-                        }
-
-                        if let Some(v) = &node.value {
-                            data.push((common_chars.clone(), v));
-                        }
-
-                        match end_iter.next() {
-                            Some(&c) => {
-                                char = c;
-                            }
-                            None => {
-                                break;
-                            }
-                        }
-                    }
+                    self.collect_values_along_path_to_end(
+                        common_node,
+                        end_char,
+                        remaining_end_chars,
+                        common_chars,
+                        &mut data,
+                    );
                 }
 
                 data
             }
-            None => node
+            None => common_node
                 .get_all()
                 .into_iter()
                 .map(|(chars, v)| {
                     (
-                        (common_chars << (4 * chars.len()))
+                        (common_chars << (CHAR_BITSIZE * chars.len()))
                             + chars
                                 .into_iter()
                                 .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
