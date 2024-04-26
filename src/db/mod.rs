@@ -162,6 +162,16 @@ impl RedisDb {
             .map_or_else(|| vec![], |stream| stream.xrange(start, end))
     }
 
+    pub(crate) fn xread(
+        &self,
+        key: &Vec<u8>,
+        start: StreamEntryID,
+    ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        self.streams
+            .get(key)
+            .map_or_else(|| vec![], |stream| stream.xread(start))
+    }
+
     pub fn new() -> Self {
         Self {
             nonexpire_table: HashMap::new(),

@@ -59,6 +59,10 @@ pub(crate) enum Command {
         start: StreamEntryID,
         end: StreamEntryID,
     },
+    XRead {
+        key: Vec<u8>,
+        start: StreamEntryID,
+    },
 }
 
 impl Command {
@@ -493,6 +497,50 @@ impl Command {
                     key: key.clone(),
                     start,
                     end,
+                }
+            }
+            b"xread" => {
+                let (kw, _remaining) = remaining.split_first().context("Extract `streams` kw")?;
+                if kw.to_ascii_lowercase() != b"streams" {
+                    return Err(anyhow::anyhow!(
+                        "Expects `streams` after XREAD, found: {:?}",
+                        kw
+                    ));
+                }
+                let (key, _remaining) = _remaining.split_first().context("Extract XRANGE key")?;
+                let (start, _remaining) = _remaining
+                    .split_first()
+                    .context("Extract XADD start argument")?;
+
+                let start = match start.iter().position(|&c| c == b'-') {
+                    Some(idx) => {
+                        let (millis, seq_num) = start.split_at(idx);
+                        let seq_num = &seq_num[1..];
+                        StreamEntryID {
+                            millis: std::str::from_utf8(millis)
+                                .context("UTF-8 decode millis")?
+                                .parse()
+                                .context("Convert millis string to u64")?,
+                            seq_num: std::str::from_utf8(seq_num)
+                                .context("UTF-8 decode seq_num")?
+                                .parse()
+                                .context("Convert seq_num string to u64")?,
+                        }
+                    }
+                    None => StreamEntryID {
+                        millis: std::str::from_utf8(start)
+                            .context("UTF-8 decode millis")?
+                            .parse()
+                            .context("Convert millis string to u64")?,
+                        seq_num: u64::MIN,
+                    },
+                };
+
+                remaining = _remaining;
+
+                Command::XRead {
+                    key: key.clone(),
+                    start,
                 }
             }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
