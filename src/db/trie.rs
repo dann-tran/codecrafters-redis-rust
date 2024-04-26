@@ -127,20 +127,35 @@ impl<T> Trie<T> {
 
         // find first u4 char that differs in start and end
         while let Some((start_char, end_char)) = cpair_iter.next() {
+            // shift start_char to the first non-empty node
+            let start_char = match node.children[(start_char as usize)..=(end_char as usize)]
+                .iter()
+                .position(|n| n.is_some())
+            {
+                Some(c) => start_char + c as u8,
+                None => {
+                    return None;
+                }
+            };
+
+            // shift end_char to the first non-empty node
+            let end_char = match node.children[(start_char as usize)..=(end_char as usize)]
+                .iter()
+                .rev()
+                .position(|n| n.is_some())
+            {
+                Some(c) => end_char - c as u8,
+                None => return None,
+            };
+
             if start_char != end_char {
                 cpair = Some((start_char, end_char));
                 break;
             }
             common_chars = (common_chars << CHAR_BITSIZE) + start_char as u64;
-            let idx = start_char as usize;
-            match &node.children[idx] {
-                Some(n) => {
-                    node = n.as_ref();
-                }
-                None => {
-                    return None;
-                }
-            }
+            node = node.children[start_char as usize]
+                .as_ref()
+                .expect("Not None");
         }
 
         let (start_chars, end_chars) = cpair_iter.fold(
@@ -170,19 +185,23 @@ impl<T> Trie<T> {
         let mut start_iter = remaining_start_chars.into_iter();
         let mut node = common_node;
         let mut char = start_char;
+        let mut has_passed_first_iter = false;
         loop {
             node = node.children[char as usize].as_ref().expect("Not None");
             common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
 
-            for idx in ((char + 1) as usize..CHARSET_SIZE).rev() {
-                if let Some(n) = &node.children[idx] {
-                    stack.push((common_chars, n));
+            if has_passed_first_iter {
+                for idx in ((char + 1) as usize..CHARSET_SIZE).rev() {
+                    if let Some(n) = &node.children[idx] {
+                        stack.push((common_chars, n));
+                    }
                 }
             }
 
             if let Some(v) = &node.value {
                 data.push((common_chars, v));
             }
+
             match start_iter.next() {
                 Some(c) => {
                     char = match node.children[(c as usize)..CHARSET_SIZE]
@@ -199,6 +218,8 @@ impl<T> Trie<T> {
                     break;
                 }
             }
+
+            has_passed_first_iter = true;
         }
 
         while let Some((chars, n)) = stack.pop() {
@@ -207,7 +228,7 @@ impl<T> Trie<T> {
                 .into_iter()
                 .map(|(_chars, v)| {
                     (
-                        (chars << (4 * _chars.len()))
+                        (chars << (CHAR_BITSIZE * _chars.len()))
                             + _chars
                                 .into_iter()
                                 .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
@@ -262,34 +283,33 @@ impl<T> Trie<T> {
         let mut node = common_node;
         let mut end_iter = remaining_end_chars.iter();
         let mut char = end_char;
+        let mut has_passed_first_iter = false;
         loop {
-            node = if let Some(n) = &node.children[char as usize] {
-                n.as_ref()
-            } else {
-                break;
-            };
+            node = node.children[char as usize].as_ref().expect("Not None");
             common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
 
-            for c in 0..char {
-                if let Some(n) = &node.children[c as usize] {
-                    common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
+            if has_passed_first_iter {
+                for c in 0..char {
+                    if let Some(n) = &node.children[c as usize] {
+                        common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
 
-                    let mut items = n
-                        .get_all()
-                        .into_iter()
-                        .map(|(mut _chars, v)| {
-                            (
-                                (common_chars << (4 * _chars.len()))
-                                    + _chars
-                                        .into_iter()
-                                        .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
-                                v,
-                            )
-                        })
-                        .collect();
-                    data.append(&mut items);
+                        let mut items = n
+                            .get_all()
+                            .into_iter()
+                            .map(|(mut _chars, v)| {
+                                (
+                                    (common_chars << (CHAR_BITSIZE * _chars.len()))
+                                        + _chars
+                                            .into_iter()
+                                            .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
+                                    v,
+                                )
+                            })
+                            .collect();
+                        data.append(&mut items);
 
-                    common_chars = common_chars >> CHAR_BITSIZE;
+                        common_chars = common_chars >> CHAR_BITSIZE;
+                    }
                 }
             }
 
@@ -299,12 +319,23 @@ impl<T> Trie<T> {
 
             match end_iter.next() {
                 Some(&c) => {
-                    char = c;
+                    char = match node.children[0..=(c as usize)]
+                        .iter()
+                        .rev()
+                        .position(|n| n.is_some())
+                    {
+                        Some(_c) => c - _c as u8,
+                        None => {
+                            break;
+                        }
+                    };
                 }
                 None => {
                     break;
                 }
             }
+
+            has_passed_first_iter = true;
         }
     }
 
@@ -317,29 +348,6 @@ impl<T> Trie<T> {
 
         match cpair {
             Some((start_char, end_char)) => {
-                // shift start_char to the first non-empty node
-                let start_char = match common_node.children
-                    [(start_char as usize)..=(end_char as usize)]
-                    .iter()
-                    .position(|n| n.is_some())
-                {
-                    Some(c) => c as u8 + start_char,
-                    None => {
-                        return vec![];
-                    }
-                };
-
-                // shift end_char to the first non-empty node
-                let end_char = match common_node.children
-                    [(start_char as usize)..=(end_char as usize)]
-                    .iter()
-                    .rev()
-                    .position(|n| n.is_some())
-                {
-                    Some(c) => end_char - c as u8,
-                    None => return vec![],
-                };
-
                 let mut data = Vec::new();
                 self.collect_values_along_path_to_start(
                     common_node,
@@ -434,6 +442,44 @@ mod tests {
         let (start, end) = (2u64, 5u64);
         let expected_values: Vec<(u64, String)> =
             vec![(2, "test2".to_string()), (4, "test4".to_string())];
+
+        // Act
+        let actual = trie.get_range_incl(start, end);
+        let actual_values = actual
+            .into_iter()
+            .map(|(chars, val)| (chars, val.clone()))
+            .collect::<Vec<(u64, String)>>();
+
+        // Assert
+        assert_eq!(actual_values, expected_values);
+    }
+
+    #[test]
+    fn test_trie_getrangeinclusive_startmin() {
+        // Arrange
+        let trie = get_sample_trie();
+        let (start, end) = (0u64, 5u64);
+        let expected_values: Vec<(u64, String)> =
+            vec![(2, "test2".to_string()), (4, "test4".to_string())];
+
+        // Act
+        let actual = trie.get_range_incl(start, end);
+        let actual_values = actual
+            .into_iter()
+            .map(|(chars, val)| (chars, val.clone()))
+            .collect::<Vec<(u64, String)>>();
+
+        // Assert
+        assert_eq!(actual_values, expected_values);
+    }
+
+    #[test]
+    fn test_trie_getrangeinclusive_endmax() {
+        // Arrange
+        let trie = get_sample_trie();
+        let (start, end) = (3, u64::MAX);
+        let expected_values: Vec<(u64, String)> =
+            vec![(4, "test4".to_string()), (16, "test16".to_string())];
 
         // Act
         let actual = trie.get_range_incl(start, end);

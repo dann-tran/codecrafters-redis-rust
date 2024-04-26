@@ -135,12 +135,12 @@ impl RedisStream {
             .get_range_incl(start.millis, end.millis)
             .into_iter()
             .flat_map(|(millis, trie)| {
-                let start_seq_num = if millis == end.millis {
+                let start_seq_num = if millis == start.millis {
                     start.seq_num
                 } else {
                     u64::MIN
                 };
-                let end_seq_num = if millis == start.millis {
+                let end_seq_num = if millis == end.millis {
                     end.seq_num
                 } else {
                     u64::MAX
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_xrange_startfromzero() {
+    fn test_stream_xrange_startmin() {
         // Arrange
         let stream = make_sample_stream();
         let start = StreamEntryID {
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_xrange_tillend() {
+    fn test_stream_xrange_endmax() {
         // Arrange
         let stream = make_sample_stream();
         let start = StreamEntryID {
