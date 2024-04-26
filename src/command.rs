@@ -422,28 +422,35 @@ impl Command {
                     .split_first()
                     .context("Extract XRANGE start argument")?;
 
-                let start = match start.iter().position(|&c| c == b'-') {
-                    Some(idx) => {
-                        let (millis, seq_num) = start.split_at(idx);
-                        let seq_num = &seq_num[1..];
-                        StreamEntryID {
-                            millis: std::str::from_utf8(millis)
+                let start = if start == b"-" {
+                    StreamEntryID {
+                        millis: 0,
+                        seq_num: 0,
+                    }
+                } else {
+                    match start.iter().position(|&c| c == b'-') {
+                        Some(idx) => {
+                            let (millis, seq_num) = start.split_at(idx);
+                            let seq_num = &seq_num[1..];
+                            StreamEntryID {
+                                millis: std::str::from_utf8(millis)
+                                    .context("UTF-8 decode millis")?
+                                    .parse()
+                                    .context("Convert millis string to u64")?,
+                                seq_num: std::str::from_utf8(seq_num)
+                                    .context("UTF-8 decode seq_num")?
+                                    .parse()
+                                    .context("Convert seq_num string to u64")?,
+                            }
+                        }
+                        None => StreamEntryID {
+                            millis: std::str::from_utf8(start)
                                 .context("UTF-8 decode millis")?
                                 .parse()
                                 .context("Convert millis string to u64")?,
-                            seq_num: std::str::from_utf8(seq_num)
-                                .context("UTF-8 decode seq_num")?
-                                .parse()
-                                .context("Convert seq_num string to u64")?,
-                        }
+                            seq_num: u64::MIN,
+                        },
                     }
-                    None => StreamEntryID {
-                        millis: std::str::from_utf8(start)
-                            .context("UTF-8 decode millis")?
-                            .parse()
-                            .context("Convert millis string to u64")?,
-                        seq_num: u64::MIN,
-                    },
                 };
 
                 let (end, _remaining) = _remaining

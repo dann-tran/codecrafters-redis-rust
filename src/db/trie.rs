@@ -1,5 +1,7 @@
+const CHARSET_SIZE: usize = 16;
+
 struct TrieNode<T> {
-    children: [Option<Box<Self>>; 16], // u4 vocab
+    children: [Option<Box<Self>>; CHARSET_SIZE], // u4 vocab
     value: Option<T>,
 }
 
@@ -19,9 +21,9 @@ impl<T> TrieNode<T> {
         }
 
         let mut stack = Vec::new();
-        for idx in (0u8..16).rev() {
-            if let Some(n) = &self.children[idx as usize] {
-                stack.push((vec![idx], n));
+        for idx in (0..CHARSET_SIZE).rev() {
+            if let Some(n) = &self.children[idx] {
+                stack.push((vec![idx as u8], n));
             }
         }
 
@@ -29,10 +31,10 @@ impl<T> TrieNode<T> {
             if let Some(v) = &n.value {
                 data.push((chars_u4.clone(), v));
             }
-            for _idx in (0u8..16).rev() {
-                if let Some(n) = &n.children[_idx as usize] {
+            for _idx in (0..CHARSET_SIZE).rev() {
+                if let Some(n) = &n.children[_idx] {
                     let mut _chars_u4 = chars_u4.clone();
-                    _chars_u4.push(_idx);
+                    _chars_u4.push(_idx as u8);
                     stack.push((_chars_u4, n));
                 }
             }
@@ -107,7 +109,6 @@ impl<T> Trie<T> {
     }
 
     pub(crate) fn get_range_incl(&self, start: u64, end: u64) -> Vec<(u64, &T)> {
-        eprintln!("Get range inclusive: {start} {end}");
         // Assumptions: start <= end
         let mut node = &self.root;
         let start_iter = u64_to_u4s(start).into_iter();
@@ -140,7 +141,10 @@ impl<T> Trie<T> {
                 let mut data = Vec::new();
 
                 let (start_chars_u4, end_chars_u4) = cpair_u4_iter.fold(
-                    (Vec::with_capacity(16), Vec::with_capacity(16)),
+                    (
+                        Vec::with_capacity(CHARSET_SIZE),
+                        Vec::with_capacity(CHARSET_SIZE),
+                    ),
                     |(mut start_chars, mut end_chars), (start_c, end_c)| {
                         start_chars.push(start_c);
                         end_chars.push(end_c);
@@ -168,8 +172,8 @@ impl<T> Trie<T> {
                         }
                     };
 
-                    for idx in ((char_u4 + 1)..16).rev() {
-                        if let Some(n) = &node.children[idx as usize] {
+                    for idx in ((char_u4 + 1) as usize..CHARSET_SIZE).rev() {
+                        if let Some(n) = &node.children[idx] {
                             stack.push((common_chars_u4, n));
                         }
                     }

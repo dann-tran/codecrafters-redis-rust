@@ -136,14 +136,14 @@ impl RedisStream {
             .into_iter()
             .flat_map(|(millis, trie)| {
                 let start_seq_num = if millis == end.millis {
-                    u64::MIN
-                } else {
                     start.seq_num
+                } else {
+                    u64::MIN
                 };
                 let end_seq_num = if millis == start.millis {
-                    u64::MAX
-                } else {
                     end.seq_num
+                } else {
+                    u64::MAX
                 };
                 let entries = trie.get_range_incl(start_seq_num, end_seq_num);
 
@@ -170,8 +170,78 @@ impl RedisStream {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
 
     #[test]
-    fn test_stream_xrange() {}
+    fn test_stream_xrange() {
+        // Arrange
+        let mut stream = RedisStream::new();
+
+        let _ = stream.insert(
+            Some(ReqStreamEntryID {
+                millis: 0,
+                seq_num: Some(2),
+            }),
+            HashMap::from([
+                (b"foo".to_vec(), b"0".to_vec()),
+                (b"bar".to_vec(), b"2".to_vec()),
+            ]),
+        );
+        let _ = stream.insert(
+            Some(ReqStreamEntryID {
+                millis: 0,
+                seq_num: Some(3),
+            }),
+            HashMap::from([
+                (b"foo".to_vec(), b"0".to_vec()),
+                (b"bar".to_vec(), b"3".to_vec()),
+            ]),
+        );
+        let _ = stream.insert(
+            Some(ReqStreamEntryID {
+                millis: 0,
+                seq_num: Some(4),
+            }),
+            HashMap::from([
+                (b"foo".to_vec(), b"0".to_vec()),
+                (b"bar".to_vec(), b"4".to_vec()),
+            ]),
+        );
+
+        let start = StreamEntryID {
+            millis: 0,
+            seq_num: 2,
+        };
+        let end = StreamEntryID {
+            millis: 0,
+            seq_num: 3,
+        };
+
+        let expected = vec![
+            (
+                b"0-2".to_vec(),
+                vec![
+                    b"foo".to_vec(),
+                    b"0".to_vec(),
+                    b"bar".to_vec(),
+                    b"2".to_vec(),
+                ],
+            ),
+            (
+                b"0-3".to_vec(),
+                vec![
+                    b"foo".to_vec(),
+                    b"0".to_vec(),
+                    b"bar".to_vec(),
+                    b"3".to_vec(),
+                ],
+            ),
+        ];
+
+        // Act
+        let actual = stream.xrange(start, end);
+
+        // Assert
+        assert_eq!(actual, expected);
+    }
 }
