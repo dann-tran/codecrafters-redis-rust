@@ -141,7 +141,29 @@ impl<T> Trie<T> {
         }
 
         match cpair {
+            // these start_char and end_char should correspond to non-empty paths
             Some((start_char, end_char)) => {
+                // shift start_char to the first non-empty node
+                let start_char = match node.children[(start_char as usize)..=(end_char as usize)]
+                    .iter()
+                    .position(|n| n.is_some())
+                {
+                    Some(c) => c as u8 + start_char,
+                    None => {
+                        return vec![];
+                    }
+                };
+
+                // shift end_char to the first non-empty node
+                let end_char = match node.children[(start_char as usize)..=(end_char as usize)]
+                    .iter()
+                    .rev()
+                    .position(|n| n.is_some())
+                {
+                    Some(c) => end_char - c as u8,
+                    None => return vec![],
+                };
+
                 let common_node = node;
                 let mut data = Vec::new();
 
@@ -164,15 +186,9 @@ impl<T> Trie<T> {
                 let mut node = common_node;
                 let mut char = start_char;
                 loop {
+                    node = node.children[char as usize].as_ref().expect("Not None");
                     common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
                     depth_delta += 1;
-
-                    node = match node.children[char as usize..].iter().find(|&n| n.is_some()) {
-                        Some(n) => n.as_ref().expect("Not None"),
-                        None => {
-                            break;
-                        }
-                    };
 
                     for idx in ((char + 1) as usize..CHARSET_SIZE).rev() {
                         if let Some(n) = &node.children[idx] {
@@ -185,7 +201,15 @@ impl<T> Trie<T> {
                     }
                     match start_iter.next() {
                         Some(c) => {
-                            char = c;
+                            char = match node.children[(c as usize)..CHARSET_SIZE]
+                                .iter()
+                                .position(|n| n.is_some())
+                            {
+                                Some(_c) => c + _c as u8,
+                                None => {
+                                    break;
+                                }
+                            };
                         }
                         None => {
                             break;
@@ -210,51 +234,17 @@ impl<T> Trie<T> {
                     data.append(&mut items);
                 }
 
-                // collect values after the divergence point, between the paths to start and end nodes
-                common_chars = common_chars >> (4 * depth_delta);
-                for c in (start_char + 1)..end_char {
-                    if let Some(n) = &common_node.children[c as usize] {
-                        common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
-
-                        let mut items = n
-                            .get_all()
-                            .into_iter()
-                            .map(|(_chars, v)| {
-                                (
-                                    (common_chars << (4 * _chars.len()))
-                                        + _chars
-                                            .into_iter()
-                                            .fold(0u64, |acc, c| (acc << CHAR_BITSIZE) + c as u64),
-                                    v,
-                                )
-                            })
-                            .collect();
-                        data.append(&mut items);
-
-                        common_chars = common_chars >> CHAR_BITSIZE;
-                    }
-                }
-
-                // collect values on the path to end node
-                let mut node = common_node;
-                let mut end_iter = end_chars.iter();
-                let mut char = end_char;
-                loop {
-                    common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
-                    node = if let Some(n) = &node.children[char as usize] {
-                        n.as_ref()
-                    } else {
-                        break;
-                    };
-
-                    for c in 0..char {
-                        if let Some(n) = &node.children[c as usize] {
+                if end_char > start_char {
+                    // collect values after the divergence point, between the paths to start and end nodes
+                    common_chars = common_chars >> (CHAR_BITSIZE * depth_delta);
+                    for c in (start_char + 1)..end_char {
+                        if let Some(n) = &common_node.children[c as usize] {
                             common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
 
                             let mut items = n
                                 .get_all()
                                 .into_iter()
-                                .map(|(mut _chars, v)| {
+                                .map(|(_chars, v)| {
                                     (
                                         (common_chars << (4 * _chars.len()))
                                             + _chars.into_iter().fold(0u64, |acc, c| {
@@ -270,16 +260,52 @@ impl<T> Trie<T> {
                         }
                     }
 
-                    if let Some(v) = &node.value {
-                        data.push((common_chars.clone(), v));
-                    }
-
-                    match end_iter.next() {
-                        Some(&c) => {
-                            char = c;
-                        }
-                        None => {
+                    // collect values on the path to end node
+                    let mut node = common_node;
+                    let mut end_iter = end_chars.iter();
+                    let mut char = end_char;
+                    loop {
+                        node = if let Some(n) = &node.children[char as usize] {
+                            n.as_ref()
+                        } else {
                             break;
+                        };
+                        common_chars = (common_chars << CHAR_BITSIZE) + char as u64;
+
+                        for c in 0..char {
+                            if let Some(n) = &node.children[c as usize] {
+                                common_chars = (common_chars << CHAR_BITSIZE) + c as u64;
+
+                                let mut items = n
+                                    .get_all()
+                                    .into_iter()
+                                    .map(|(mut _chars, v)| {
+                                        (
+                                            (common_chars << (4 * _chars.len()))
+                                                + _chars.into_iter().fold(0u64, |acc, c| {
+                                                    (acc << CHAR_BITSIZE) + c as u64
+                                                }),
+                                            v,
+                                        )
+                                    })
+                                    .collect();
+                                data.append(&mut items);
+
+                                common_chars = common_chars >> CHAR_BITSIZE;
+                            }
+                        }
+
+                        if let Some(v) = &node.value {
+                            data.push((common_chars.clone(), v));
+                        }
+
+                        match end_iter.next() {
+                            Some(&c) => {
+                                char = c;
+                            }
+                            None => {
+                                break;
+                            }
                         }
                     }
                 }
