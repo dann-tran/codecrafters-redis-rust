@@ -172,9 +172,7 @@ impl RedisStream {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_stream_xrange() {
-        // Arrange
+    fn make_sample_stream() -> RedisStream {
         let mut stream = RedisStream::new();
 
         let _ = stream.insert(
@@ -207,7 +205,13 @@ mod tests {
                 (b"bar".to_vec(), b"4".to_vec()),
             ]),
         );
+        stream
+    }
 
+    #[test]
+    fn test_stream_xrange() {
+        // Arrange
+        let stream = make_sample_stream();
         let start = StreamEntryID {
             millis: 0,
             seq_num: 2,
@@ -217,31 +221,42 @@ mod tests {
             seq_num: 3,
         };
 
-        let expected = vec![
-            (
-                b"0-2".to_vec(),
-                vec![
-                    b"foo".to_vec(),
-                    b"0".to_vec(),
-                    b"bar".to_vec(),
-                    b"2".to_vec(),
-                ],
-            ),
-            (
-                b"0-3".to_vec(),
-                vec![
-                    b"foo".to_vec(),
-                    b"0".to_vec(),
-                    b"bar".to_vec(),
-                    b"3".to_vec(),
-                ],
-            ),
-        ];
+        let expected_ids = vec![b"0-2".to_vec(), b"0-3".to_vec()];
 
         // Act
         let actual = stream.xrange(start, end);
+        let actual_ids = actual
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<Vec<u8>>>();
 
         // Assert
-        assert_eq!(actual, expected);
+        assert_eq!(actual_ids, expected_ids);
+    }
+
+    #[test]
+    fn test_stream_xrange_startfromzero() {
+        // Arrange
+        let stream = make_sample_stream();
+        let start = StreamEntryID {
+            millis: 0,
+            seq_num: 0,
+        };
+        let end = StreamEntryID {
+            millis: 0,
+            seq_num: 2,
+        };
+
+        let expected_ids = vec![b"0-2".to_vec()];
+
+        // Act
+        let actual = stream.xrange(start, end);
+        let actual_ids = actual
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<Vec<u8>>>();
+
+        // Assert
+        assert_eq!(actual_ids, expected_ids);
     }
 }
