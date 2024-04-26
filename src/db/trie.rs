@@ -389,38 +389,60 @@ impl<T> Trie<T> {
 mod tests {
     use super::*;
 
+    fn get_sample_trie() -> Trie<String> {
+        let mut trie = Trie::new();
+        trie.insert(2, "test2".to_string());
+        trie.insert(4, "test4".to_string());
+        trie.insert(16, "test16".to_string());
+        trie
+    }
+
     #[test]
     fn test_trie_getall() {
-        let mut trie = Trie::new();
-        trie.insert(2, "two".to_string());
-        trie.insert(16, "sixteen".to_string());
+        // Arrange
+        let trie = get_sample_trie();
+        let expected_values: Vec<(Vec<u8>, String)> = vec![
+            (
+                vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+                "test2".to_string(),
+            ),
+            (
+                vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4],
+                "test4".to_string(),
+            ),
+            (
+                vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+                "test16".to_string(),
+            ),
+        ];
 
+        // Act
         let actual = trie.root.get_all();
+        let actual_values = actual
+            .into_iter()
+            .map(|(chars, val)| (chars, val.clone()))
+            .collect::<Vec<(Vec<u8>, String)>>();
 
-        assert_eq!(actual.len(), 2);
-        let (key0, val0) = &actual[0];
-        assert_eq!(*key0, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-        assert_eq!(*val0, "two");
-        let (key1, val1) = &actual[1];
-        assert_eq!(*key1, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
-        assert_eq!(*val1, "sixteen");
+        // Assert
+        assert_eq!(actual_values, expected_values);
     }
 
     #[test]
     fn test_trie_getrangeinclusive() {
-        let mut trie = Trie::new();
-        trie.insert(2, "test".to_string());
-        trie.insert(4, "test".to_string());
-        trie.insert(8, "test".to_string());
+        // Arrange
+        let trie = get_sample_trie();
+        let (start, end) = (2u64, 5u64);
+        let expected_values: Vec<(u64, String)> =
+            vec![(2, "test2".to_string()), (4, "test4".to_string())];
 
-        let actual = trie.get_range_incl(2, 5);
+        // Act
+        let actual = trie.get_range_incl(start, end);
+        let actual_values = actual
+            .into_iter()
+            .map(|(chars, val)| (chars, val.clone()))
+            .collect::<Vec<(u64, String)>>();
 
-        assert_eq!(actual.len(), 2, "{:?}", actual);
-        let (key0, val0) = &actual[0];
-        assert_eq!(*key0, 2);
-        assert_eq!(*val0, "test");
-        let (key1, val1) = &actual[1];
-        assert_eq!(*key1, 4);
-        assert_eq!(*val1, "test");
+        // Assert
+        assert_eq!(actual_values, expected_values);
     }
 }

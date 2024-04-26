@@ -259,4 +259,30 @@ mod tests {
         // Assert
         assert_eq!(actual_ids, expected_ids);
     }
+
+    #[test]
+    fn test_stream_xrange_tillend() {
+        // Arrange
+        let stream = make_sample_stream();
+        let start = StreamEntryID {
+            millis: 0,
+            seq_num: 3,
+        };
+        let end = StreamEntryID {
+            millis: u64::MAX,
+            seq_num: u64::MAX,
+        };
+
+        let expected_ids = vec![b"0-3".to_vec(), b"0-4".to_vec()];
+
+        // Act
+        let actual = stream.xrange(start, end);
+        let actual_ids = actual
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<Vec<u8>>>();
+
+        // Assert
+        assert_eq!(actual_ids, expected_ids);
+    }
 }
