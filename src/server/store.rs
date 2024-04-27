@@ -2,9 +2,12 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::Mutex;
 
-use crate::db::{
-    stream::{ReqStreamEntryID, StreamEntryID},
-    RedisDb, RedisValueType,
+use crate::{
+    command::XReadStreamArg,
+    db::{
+        stream::{ReqStreamEntryID, StreamEntryID},
+        RedisDb, RedisValueType,
+    },
 };
 
 #[derive(Clone)]
@@ -76,9 +79,8 @@ impl RedisStore {
 
     pub(crate) async fn xread(
         &self,
-        key: &Vec<u8>,
-        start: StreamEntryID,
-    ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
-        self.get_cur_db().lock().await.xread(key, start)
+        args: &Vec<XReadStreamArg>,
+    ) -> Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<Vec<u8>>)>)> {
+        self.get_cur_db().lock().await.xread(args)
     }
 }

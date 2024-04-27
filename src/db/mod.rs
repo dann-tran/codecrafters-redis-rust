@@ -4,6 +4,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use crate::command::XReadStreamArg;
+
 use self::stream::{RedisStream, ReqStreamEntryID, StreamEntryID};
 
 pub(crate) mod stream;
@@ -31,6 +33,14 @@ pub(crate) struct RedisDb {
 }
 
 impl RedisDb {
+    pub fn new() -> Self {
+        Self {
+            nonexpire_table: HashMap::new(),
+            expire_table: HashMap::new(),
+            streams: HashMap::new(),
+        }
+    }
+
     pub(crate) fn get(&mut self, key: &Vec<u8>) -> Option<Vec<u8>> {
         match self.nonexpire_table.get(key) {
             Some(val) => {
@@ -164,19 +174,127 @@ impl RedisDb {
 
     pub(crate) fn xread(
         &self,
-        key: &Vec<u8>,
-        start: StreamEntryID,
-    ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
-        self.streams
-            .get(key)
-            .map_or_else(|| vec![], |stream| stream.xread(start))
+        args: &Vec<XReadStreamArg>,
+    ) -> Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<Vec<u8>>)>)> {
+        args.into_iter()
+            .map(|arg| {
+                return (
+                    arg.key.clone(),
+                    self.streams
+                        .get(&arg.key)
+                        .map_or_else(|| vec![], |stream| stream.xread(&arg.start)),
+                );
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::vec;
+
+    use super::*;
+
+    fn get_sample_db() -> RedisDb {
+        let mut db = RedisDb::new();
+
+        let _ = db.xadd(
+            &b"apple".to_vec(),
+            Some(ReqStreamEntryID {
+                millis: 0,
+                seq_num: Some(1),
+            }),
+            HashMap::from([(b"temperature".to_vec(), b"23".to_vec())]),
+        );
+
+        let _ = db.xadd(
+            &b"apple".to_vec(),
+            Some(ReqStreamEntryID {
+                millis: 0,
+                seq_num: Some(2),
+            }),
+            HashMap::from([(b"temperature".to_vec(), b"24".to_vec())]),
+        );
+
+        let _ = db.xadd(
+            &b"orange".to_vec(),
+            Some(ReqStreamEntryID {
+                millis: 0,
+                seq_num: Some(4),
+            }),
+            HashMap::from([(b"temperature".to_vec(), b"20".to_vec())]),
+        );
+
+        db
     }
 
-    pub fn new() -> Self {
-        Self {
-            nonexpire_table: HashMap::new(),
-            expire_table: HashMap::new(),
-            streams: HashMap::new(),
-        }
+    #[test]
+    fn test_xread_singlestream() {
+        // Arrange
+        let db = get_sample_db();
+        let args = &vec![XReadStreamArg {
+            key: b"apple".to_vec(),
+            start: StreamEntryID {
+                millis: 0,
+                seq_num: 1,
+            },
+        }];
+        let expected = vec![(
+            b"apple".to_vec(),
+            vec![(
+                b"0-2".to_vec(),
+                vec![b"temperature".to_vec(), b"24".to_vec()],
+            )],
+        )];
+
+        // Act
+        let actual = db.xread(args);
+
+        // Assert
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_xread_multistream() {
+        // Arrange
+        let db = get_sample_db();
+        let args = &vec![
+            XReadStreamArg {
+                key: b"apple".to_vec(),
+                start: StreamEntryID {
+                    millis: 0,
+                    seq_num: 1,
+                },
+            },
+            XReadStreamArg {
+                key: b"orange".to_vec(),
+                start: StreamEntryID {
+                    millis: 0,
+                    seq_num: 3,
+                },
+            },
+        ];
+        let expected = vec![
+            (
+                b"apple".to_vec(),
+                vec![(
+                    b"0-2".to_vec(),
+                    vec![b"temperature".to_vec(), b"24".to_vec()],
+                )],
+            ),
+            (
+                b"orange".to_vec(),
+                vec![(
+                    b"0-4".to_vec(),
+                    vec![b"temperature".to_vec(), b"20".to_vec()],
+                )],
+            ),
+        ];
+
+        // Act
+        let actual = db.xread(args);
+
+        // Assert
+        assert_eq!(actual, expected);
     }
 }

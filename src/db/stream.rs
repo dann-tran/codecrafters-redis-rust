@@ -6,13 +6,13 @@ use std::{
 
 use super::trie::Trie;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReqStreamEntryID {
     pub(crate) millis: u64,
     pub(crate) seq_num: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StreamEntryID {
     pub(crate) millis: u64,
     pub(crate) seq_num: u64,
@@ -167,7 +167,7 @@ impl RedisStream {
             .collect()
     }
 
-    pub(crate) fn xread(&self, start: StreamEntryID) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+    pub(crate) fn xread(&self, start: &StreamEntryID) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
         let (millis, seq_num) = if start.seq_num == u64::MAX {
             (start.millis + 1, 0)
         } else {

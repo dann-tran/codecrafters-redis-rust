@@ -280,27 +280,33 @@ impl RedisServerHandler for MasterServer {
                     );
                     send_resp(&mut socket, &resp).await;
                 }
-                Command::XRead { key, start } => {
+                Command::XRead(vec) => {
                     eprintln!("Handling XREAD");
-                    let data = self.store.xread(&key, start).await;
-                    let resp = RespValue::Array(vec![RespValue::Array(vec![
-                        RespValue::BulkString(key),
-                        RespValue::Array(
-                            data.into_iter()
-                                .map(|(entry_id, entry_data)| {
-                                    RespValue::Array(vec![
-                                        RespValue::BulkString(entry_id),
-                                        RespValue::Array(
-                                            entry_data
-                                                .into_iter()
-                                                .map(|x| RespValue::BulkString(x))
-                                                .collect(),
-                                        ),
-                                    ])
-                                })
-                                .collect(),
-                        ),
-                    ])]);
+                    let data = self.store.xread(&vec).await;
+                    let resp = RespValue::Array(
+                        data.into_iter()
+                            .map(|(key, data)| {
+                                RespValue::Array(vec![
+                                    RespValue::BulkString(key),
+                                    RespValue::Array(
+                                        data.into_iter()
+                                            .map(|(entry_id, entry_data)| {
+                                                RespValue::Array(vec![
+                                                    RespValue::BulkString(entry_id),
+                                                    RespValue::Array(
+                                                        entry_data
+                                                            .into_iter()
+                                                            .map(|x| RespValue::BulkString(x))
+                                                            .collect(),
+                                                    ),
+                                                ])
+                                            })
+                                            .collect(),
+                                    ),
+                                ])
+                            })
+                            .collect(),
+                    );
                     send_resp(&mut socket, &resp).await;
                 }
             };
