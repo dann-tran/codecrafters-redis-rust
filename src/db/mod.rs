@@ -4,6 +4,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use tokio::sync::broadcast;
+
 use crate::command::XReadStreamArg;
 
 use self::stream::{RedisStream, ReqStreamEntryID, StreamEntryID};
@@ -30,6 +32,8 @@ pub(crate) struct RedisDb {
     pub(crate) nonexpire_table: HashMap<Vec<u8>, Vec<u8>>,
     pub(crate) expire_table: HashMap<Vec<u8>, (Vec<u8>, SystemTime)>,
     pub(crate) streams: HashMap<Vec<u8>, RedisStream>,
+    pub(crate) stream_senders:
+        HashMap<Vec<u8>, broadcast::Sender<(StreamEntryID, HashMap<Vec<u8>, Vec<u8>>)>>,
 }
 
 impl RedisDb {
@@ -38,6 +42,20 @@ impl RedisDb {
             nonexpire_table: HashMap::new(),
             expire_table: HashMap::new(),
             streams: HashMap::new(),
+            stream_senders: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn get_stream_receiver(
+        &mut self,
+        key: &Vec<u8>,
+    ) -> broadcast::Receiver<(StreamEntryID, HashMap<Vec<u8>, Vec<u8>>)> {
+        if let Some(sender) = self.stream_senders.get(key) {
+            sender.subscribe()
+        } else {
+            let (sender, receiver) = broadcast::channel(1);
+            self.stream_senders.insert(key.clone(), sender);
+            receiver
         }
     }
 
@@ -150,15 +168,22 @@ impl RedisDb {
         entry_id: Option<ReqStreamEntryID>,
         data: HashMap<Vec<u8>, Vec<u8>>,
     ) -> anyhow::Result<StreamEntryID> {
-        match self.streams.get_mut(key) {
-            Some(stream) => stream.insert(entry_id, data),
-            None => {
-                let mut stream = RedisStream::new();
-                let res = stream.insert(entry_id, data)?;
-                self.streams.insert(key.clone(), stream);
-                Ok(res)
+        let res = if let Some(stream) = self.streams.get_mut(key) {
+            stream.insert(entry_id, data.clone())
+        } else {
+            let mut stream = RedisStream::new();
+            let res = stream.insert(entry_id, data.clone())?;
+            self.streams.insert(key.clone(), stream);
+            Ok(res)
+        };
+
+        if let Ok(entry_id) = &res {
+            if let Some(sender) = self.stream_senders.get(key) {
+                sender.send((entry_id.clone(), data))?;
             }
         }
+
+        res
     }
 
     pub(crate) fn xrange(

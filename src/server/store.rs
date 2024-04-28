@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 use crate::{
     command::XReadStreamArg,
@@ -41,6 +41,13 @@ impl RedisStore {
         self.databases
             .get(&self.cur_db_num)
             .expect("Current db number is valid")
+    }
+
+    pub(crate) async fn get_stream_receiver(
+        &self,
+        key: &Vec<u8>,
+    ) -> broadcast::Receiver<(StreamEntryID, HashMap<Vec<u8>, Vec<u8>>)> {
+        self.get_cur_db().lock().await.get_stream_receiver(key)
     }
 
     pub(crate) async fn get(&self, key: &Vec<u8>) -> Option<Vec<u8>> {

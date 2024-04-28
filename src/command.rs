@@ -65,7 +65,10 @@ pub(crate) enum Command {
         start: StreamEntryID,
         end: StreamEntryID,
     },
-    XRead(Vec<XReadStreamArg>),
+    XRead {
+        block: Option<Duration>,
+        streams: Vec<XReadStreamArg>,
+    },
 }
 
 impl Command {
@@ -143,16 +146,20 @@ impl Command {
 
                 vec
             }
-            Command::XRead(args) => {
-                let mut vec = Vec::with_capacity(2 + args.len() * 2);
+            Command::XRead { block, streams } => {
+                let mut vec = Vec::with_capacity(1 + block.map_or(0, |_| 2) + streams.len() * 2);
                 vec.push(b"XREAD".to_vec());
-                vec.push(b"streams".to_vec());
 
-                args.iter().for_each(|arg| {
+                if let Some(dur) = block {
+                    vec.push(b"block".to_vec());
+                    vec.push(dur.as_millis().to_string().as_bytes().to_vec());
+                }
+
+                vec.push(b"streams".to_vec());
+                streams.iter().for_each(|arg| {
                     vec.push(arg.key.clone());
                 });
-
-                args.iter().for_each(|arg| {
+                streams.iter().for_each(|arg| {
                     vec.push(arg.start.as_bytes());
                 });
 
@@ -518,58 +525,81 @@ impl Command {
                 }
             }
             b"xread" => {
-                let (kw, mut _remaining) =
-                    remaining.split_first().context("Extract `streams` kw")?;
-                if kw.to_ascii_lowercase() != b"streams" {
-                    return Err(anyhow::anyhow!(
-                        "Expects `streams` after XREAD, found: {:?}",
-                        kw
-                    ));
-                }
+                let mut block = None;
+                let mut streams = None;
 
-                let (keys, mut starts) = _remaining.split_at(_remaining.len() / 2);
-                if starts.len() == keys.len() {
-                    _remaining = &starts[starts.len()..];
-                } else {
-                    starts = &starts[..starts.len() - 1];
-                    _remaining = &starts[starts.len() - 1..];
-                }
-
-                let mut args = Vec::with_capacity(keys.len());
-                for (key, start) in keys.into_iter().zip(starts.into_iter()) {
-                    let start = match start.iter().position(|&c| c == b'-') {
-                        Some(idx) => {
-                            let (millis, seq_num) = start.split_at(idx);
-                            let seq_num = &seq_num[1..];
-                            StreamEntryID {
-                                millis: std::str::from_utf8(millis)
-                                    .context("UTF-8 decode millis")?
-                                    .parse()
-                                    .context("Convert millis string to u64")?,
-                                seq_num: std::str::from_utf8(seq_num)
-                                    .context("UTF-8 decode seq_num")?
-                                    .parse()
-                                    .context("Convert seq_num string to u64")?,
-                            }
+                while let Some((kw, mut _remaining)) = remaining.split_first() {
+                    match &kw[..] {
+                        b"block" => {
+                            let (dur, _remaining) = _remaining
+                                .split_first()
+                                .context("Extract blocking duration")?;
+                            let dur = Duration::from_millis(
+                                std::str::from_utf8(dur)
+                                    .context("UTF-8 decode blocking duration")?
+                                    .parse::<u64>()
+                                    .context("Parse blocking duration to number")?,
+                            );
+                            block = Some(dur);
+                            remaining = _remaining;
                         }
-                        None => StreamEntryID {
-                            millis: std::str::from_utf8(start)
-                                .context("UTF-8 decode millis")?
-                                .parse()
-                                .context("Convert millis string to u64")?,
-                            seq_num: u64::MIN,
-                        },
-                    };
-                    let arg = XReadStreamArg {
-                        key: key.clone(),
-                        start,
-                    };
-                    args.push(arg);
+                        b"streams" => {
+                            let (keys, mut starts) = _remaining.split_at(_remaining.len() / 2);
+                            if starts.len() == keys.len() {
+                                _remaining = &starts[starts.len()..];
+                            } else {
+                                starts = &starts[..starts.len() - 1];
+                                _remaining = &starts[starts.len() - 1..];
+                            }
+
+                            let mut args = Vec::with_capacity(keys.len());
+                            for (key, start) in keys.into_iter().zip(starts.into_iter()) {
+                                let start = match start.iter().position(|&c| c == b'-') {
+                                    Some(idx) => {
+                                        let (millis, seq_num) = start.split_at(idx);
+                                        let seq_num = &seq_num[1..];
+                                        StreamEntryID {
+                                            millis: std::str::from_utf8(millis)
+                                                .context("UTF-8 decode millis")?
+                                                .parse()
+                                                .context("Convert millis string to u64")?,
+                                            seq_num: std::str::from_utf8(seq_num)
+                                                .context("UTF-8 decode seq_num")?
+                                                .parse()
+                                                .context("Convert seq_num string to u64")?,
+                                        }
+                                    }
+                                    None => StreamEntryID {
+                                        millis: std::str::from_utf8(start)
+                                            .context("UTF-8 decode millis")?
+                                            .parse()
+                                            .context("Convert millis string to u64")?,
+                                        seq_num: u64::MIN,
+                                    },
+                                };
+                                let arg = XReadStreamArg {
+                                    key: key.clone(),
+                                    start,
+                                };
+                                args.push(arg);
+                            }
+
+                            remaining = _remaining;
+                            streams = Some(args);
+                        }
+                        kw => {
+                            return Err(anyhow::anyhow!(
+                                "Unknown keyword argument for XREAD: {:?}",
+                                kw
+                            ));
+                        }
+                    }
                 }
 
-                remaining = _remaining;
-
-                Command::XRead(args)
+                Command::XRead {
+                    block,
+                    streams: streams.context("streams argument must not be None")?,
+                }
             }
             v => return Err(anyhow::anyhow!("Unknown verb: {:?}", v)),
         };
@@ -589,13 +619,16 @@ mod tests {
     #[test]
     fn decode_xread_singlestream() {
         // Arrange
-        let command = Command::XRead(vec![XReadStreamArg {
-            key: b"apple".to_vec(),
-            start: StreamEntryID {
-                millis: 0,
-                seq_num: 0,
-            },
-        }]);
+        let command = Command::XRead {
+            block: None,
+            streams: vec![XReadStreamArg {
+                key: b"apple".to_vec(),
+                start: StreamEntryID {
+                    millis: 0,
+                    seq_num: 0,
+                },
+            }],
+        };
         let bytes = command.to_bytes();
         let expected = Some((command, &bytes[bytes.len()..]));
 
@@ -609,22 +642,25 @@ mod tests {
     #[test]
     fn decode_xread_multistream() {
         // Arrange
-        let command = Command::XRead(vec![
-            XReadStreamArg {
-                key: b"apple".to_vec(),
-                start: StreamEntryID {
-                    millis: 0,
-                    seq_num: 0,
+        let command = Command::XRead {
+            block: None,
+            streams: vec![
+                XReadStreamArg {
+                    key: b"apple".to_vec(),
+                    start: StreamEntryID {
+                        millis: 0,
+                        seq_num: 0,
+                    },
                 },
-            },
-            XReadStreamArg {
-                key: b"orange".to_vec(),
-                start: StreamEntryID {
-                    millis: 0,
-                    seq_num: 1,
+                XReadStreamArg {
+                    key: b"orange".to_vec(),
+                    start: StreamEntryID {
+                        millis: 0,
+                        seq_num: 1,
+                    },
                 },
-            },
-        ]);
+            ],
+        };
         let bytes = command.to_bytes();
         let expected = Some((command, &bytes[bytes.len()..]));
 

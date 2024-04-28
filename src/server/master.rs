@@ -280,33 +280,72 @@ impl RedisServerHandler for MasterServer {
                     );
                     send_resp(&mut socket, &resp).await;
                 }
-                Command::XRead(vec) => {
+                Command::XRead { block, streams } => {
                     eprintln!("Handling XREAD");
-                    let data = self.store.xread(&vec).await;
-                    let resp = RespValue::Array(
-                        data.into_iter()
-                            .map(|(key, data)| {
-                                RespValue::Array(vec![
-                                    RespValue::BulkString(key),
-                                    RespValue::Array(
-                                        data.into_iter()
-                                            .map(|(entry_id, entry_data)| {
-                                                RespValue::Array(vec![
-                                                    RespValue::BulkString(entry_id),
-                                                    RespValue::Array(
-                                                        entry_data
-                                                            .into_iter()
-                                                            .map(|x| RespValue::BulkString(x))
-                                                            .collect(),
-                                                    ),
-                                                ])
-                                            })
-                                            .collect(),
-                                    ),
-                                ])
-                            })
-                            .collect(),
-                    );
+
+                    let mut data = self.store.xread(&streams).await;
+
+                    if let Some(dur) = block {
+                        if data.iter().all(|(_, entries)| entries.len() == 0) {
+                            let block_read = async {
+                                let mut join_set = JoinSet::new();
+                                for arg in streams {
+                                    let key = arg.key.clone();
+                                    let mut receiver = self.store.get_stream_receiver(&key).await;
+                                    join_set.spawn(
+                                        async move { (key, receiver.recv().await.unwrap()) },
+                                    );
+                                }
+                                join_set.join_next().await.expect("Join set is not empty")
+                            };
+                            if let Ok(res) = time::timeout(dur, block_read).await {
+                                let (key, (entry_id, kvs)) = res.unwrap();
+                                let (_, serialized_data) =
+                                    data.iter_mut().find(|(k, _)| **k == key).unwrap();
+                                let kvs_len = kvs.len();
+                                let serialized_kvs = kvs.into_iter().fold(
+                                    Vec::with_capacity(kvs_len * 2),
+                                    |mut acc, (k, v)| {
+                                        acc.push(k);
+                                        acc.push(v);
+                                        acc
+                                    },
+                                );
+                                serialized_data.push((entry_id.as_bytes(), serialized_kvs));
+                            }
+                        }
+                    }
+
+                    let resp = if block != None
+                        && data.iter().all(|(_, entries)| entries.len() == 0)
+                    {
+                        RespValue::NullBulkString
+                    } else {
+                        RespValue::Array(
+                            data.into_iter()
+                                .map(|(key, data)| {
+                                    RespValue::Array(vec![
+                                        RespValue::BulkString(key),
+                                        RespValue::Array(
+                                            data.into_iter()
+                                                .map(|(entry_id, entry_data)| {
+                                                    RespValue::Array(vec![
+                                                        RespValue::BulkString(entry_id),
+                                                        RespValue::Array(
+                                                            entry_data
+                                                                .into_iter()
+                                                                .map(|x| RespValue::BulkString(x))
+                                                                .collect(),
+                                                        ),
+                                                    ])
+                                                })
+                                                .collect(),
+                                        ),
+                                    ])
+                                })
+                                .collect(),
+                        )
+                    };
                     send_resp(&mut socket, &resp).await;
                 }
             };
