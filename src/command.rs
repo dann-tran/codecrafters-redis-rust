@@ -93,11 +93,8 @@ impl Command {
             Command::Get(key) => vec![b"GET".to_vec(), key.clone()],
             Command::Info(info_arg) => {
                 let mut vec = vec![b"INFO".to_vec()];
-                match info_arg {
-                    Some(_) => {
-                        vec.push(b"replication".to_vec());
-                    }
-                    None => {}
+                if info_arg.is_some() {
+                    vec.push(b"replication".to_vec());
                 }
                 vec
             }
@@ -132,16 +129,16 @@ impl Command {
                 let mut vec = Vec::with_capacity(3);
                 vec.push(b"PSYNC".to_vec());
 
-                let repl_id = match repl_id {
-                    Some(id) => id.iter().collect::<String>().as_bytes().to_vec(),
-                    None => b"?".to_vec(),
-                };
+                let repl_id = repl_id
+                    .map_or("?".to_string(), |id| id.into_iter().collect::<String>())
+                    .as_bytes()
+                    .to_vec();
                 vec.push(repl_id);
 
-                let repl_offset = match repl_offset {
-                    Some(offset) => offset.to_string().as_bytes().to_vec(),
-                    None => b"-1".to_vec(),
-                };
+                let repl_offset = repl_offset
+                    .map_or(String::from("-1"), |offset| offset.to_string())
+                    .as_bytes()
+                    .to_vec();
                 vec.push(repl_offset);
 
                 vec
@@ -195,13 +192,15 @@ impl Command {
                 let (key, _remaining) = remaining.split_first().context("Extract SET key")?;
                 let (value, _remaining) = _remaining.split_first().context("Extract SET value")?;
 
-                let (is_px_present, _remaining) = match _remaining.split_first() {
-                    Some((px_key, __remaining)) => match &px_key.to_ascii_lowercase()[..] {
-                        b"px" => (true, __remaining),
-                        arg => return Err(anyhow::anyhow!("Invalid SET argument: {:?}", arg)),
-                    },
-                    None => (false, _remaining),
-                };
+                let (is_px_present, _remaining) =
+                    if let Some((px_key, __remaining)) = _remaining.split_first() {
+                        match &px_key.to_ascii_lowercase()[..] {
+                            b"px" => (true, __remaining),
+                            arg => return Err(anyhow::anyhow!("Invalid SET argument: {:?}", arg)),
+                        }
+                    } else {
+                        (false, _remaining)
+                    };
                 let (px, _remaining) = match is_px_present {
                     true => {
                         let (px, __remaining) = _remaining
@@ -225,16 +224,16 @@ impl Command {
                 }
             }
             b"info" => {
-                let (info_arg, _remaining) = match remaining.split_first() {
-                    Some((v, _remaining)) => {
-                        let v = v.to_ascii_lowercase();
-                        let v = match &v[..] {
-                            b"replication" => InfoArg::Replication,
-                            _ => return Err(anyhow::anyhow!("Invalid info argument {:?}", v)),
-                        };
-                        (Some(v), _remaining)
-                    }
-                    None => (None, remaining),
+                let (info_arg, _remaining) = if let Some((v, _remaining)) = remaining.split_first()
+                {
+                    let v = v.to_ascii_lowercase();
+                    let v = match &v[..] {
+                        b"replication" => InfoArg::Replication,
+                        _ => return Err(anyhow::anyhow!("Invalid info argument {:?}", v)),
+                    };
+                    (Some(v), _remaining)
+                } else {
+                    (None, remaining)
                 };
                 remaining = _remaining;
                 Command::Info(info_arg)
@@ -268,11 +267,10 @@ impl Command {
                         _remaining = __remaining;
 
                         loop {
-                            let (arg, __remaining) = match _remaining.split_first() {
-                                Some(x) => x,
-                                None => {
-                                    break;
-                                }
+                            let (arg, __remaining) = if let Some(x) = _remaining.split_first() {
+                                x
+                            } else {
+                                break;
                             };
                             assert_eq!(&arg[..], b"capa");
                             let (capa, mut __remaining) = __remaining
@@ -456,29 +454,26 @@ impl Command {
                         millis: 0,
                         seq_num: 0,
                     }
+                } else if let Some(idx) = start.iter().position(|&c| c == b'-') {
+                    let (millis, seq_num) = start.split_at(idx);
+                    let seq_num = &seq_num[1..];
+                    StreamEntryID {
+                        millis: std::str::from_utf8(millis)
+                            .context("UTF-8 decode millis")?
+                            .parse()
+                            .context("Convert millis string to u64")?,
+                        seq_num: std::str::from_utf8(seq_num)
+                            .context("UTF-8 decode seq_num")?
+                            .parse()
+                            .context("Convert seq_num string to u64")?,
+                    }
                 } else {
-                    match start.iter().position(|&c| c == b'-') {
-                        Some(idx) => {
-                            let (millis, seq_num) = start.split_at(idx);
-                            let seq_num = &seq_num[1..];
-                            StreamEntryID {
-                                millis: std::str::from_utf8(millis)
-                                    .context("UTF-8 decode millis")?
-                                    .parse()
-                                    .context("Convert millis string to u64")?,
-                                seq_num: std::str::from_utf8(seq_num)
-                                    .context("UTF-8 decode seq_num")?
-                                    .parse()
-                                    .context("Convert seq_num string to u64")?,
-                            }
-                        }
-                        None => StreamEntryID {
-                            millis: std::str::from_utf8(start)
-                                .context("UTF-8 decode millis")?
-                                .parse()
-                                .context("Convert millis string to u64")?,
-                            seq_num: u64::MIN,
-                        },
+                    StreamEntryID {
+                        millis: std::str::from_utf8(start)
+                            .context("UTF-8 decode millis")?
+                            .parse()
+                            .context("Convert millis string to u64")?,
+                        seq_num: u64::MIN,
                     }
                 };
 
@@ -490,29 +485,26 @@ impl Command {
                         millis: u64::MAX,
                         seq_num: u64::MAX,
                     }
+                } else if let Some(idx) = end.iter().position(|&c| c == b'-') {
+                    let (millis, seq_num) = end.split_at(idx);
+                    let seq_num = &seq_num[1..];
+                    StreamEntryID {
+                        millis: std::str::from_utf8(millis)
+                            .context("UTF-8 decode millis")?
+                            .parse()
+                            .context("Convert millis string to u64")?,
+                        seq_num: std::str::from_utf8(seq_num)
+                            .context("UTF-8 decode seq_num")?
+                            .parse()
+                            .context("Convert seq_num string to u64")?,
+                    }
                 } else {
-                    match end.iter().position(|&c| c == b'-') {
-                        Some(idx) => {
-                            let (millis, seq_num) = end.split_at(idx);
-                            let seq_num = &seq_num[1..];
-                            StreamEntryID {
-                                millis: std::str::from_utf8(millis)
-                                    .context("UTF-8 decode millis")?
-                                    .parse()
-                                    .context("Convert millis string to u64")?,
-                                seq_num: std::str::from_utf8(seq_num)
-                                    .context("UTF-8 decode seq_num")?
-                                    .parse()
-                                    .context("Convert seq_num string to u64")?,
-                            }
-                        }
-                        None => StreamEntryID {
-                            millis: std::str::from_utf8(end)
-                                .context("UTF-8 decode millis")?
-                                .parse()
-                                .context("Convert millis string to u64")?,
-                            seq_num: u64::MAX,
-                        },
+                    StreamEntryID {
+                        millis: std::str::from_utf8(end)
+                            .context("UTF-8 decode millis")?
+                            .parse()
+                            .context("Convert millis string to u64")?,
+                        seq_num: u64::MAX,
                     }
                 };
 
@@ -554,28 +546,28 @@ impl Command {
 
                             let mut args = Vec::with_capacity(keys.len());
                             for (key, start) in keys.into_iter().zip(starts.into_iter()) {
-                                let start = match start.iter().position(|&c| c == b'-') {
-                                    Some(idx) => {
-                                        let (millis, seq_num) = start.split_at(idx);
-                                        let seq_num = &seq_num[1..];
-                                        StreamEntryID {
-                                            millis: std::str::from_utf8(millis)
-                                                .context("UTF-8 decode millis")?
-                                                .parse()
-                                                .context("Convert millis string to u64")?,
-                                            seq_num: std::str::from_utf8(seq_num)
-                                                .context("UTF-8 decode seq_num")?
-                                                .parse()
-                                                .context("Convert seq_num string to u64")?,
-                                        }
+                                let start = if let Some(idx) = start.iter().position(|&c| c == b'-')
+                                {
+                                    let (millis, seq_num) = start.split_at(idx);
+                                    let seq_num = &seq_num[1..];
+                                    StreamEntryID {
+                                        millis: std::str::from_utf8(millis)
+                                            .context("UTF-8 decode millis")?
+                                            .parse()
+                                            .context("Convert millis string to u64")?,
+                                        seq_num: std::str::from_utf8(seq_num)
+                                            .context("UTF-8 decode seq_num")?
+                                            .parse()
+                                            .context("Convert seq_num string to u64")?,
                                     }
-                                    None => StreamEntryID {
+                                } else {
+                                    StreamEntryID {
                                         millis: std::str::from_utf8(start)
                                             .context("UTF-8 decode millis")?
                                             .parse()
                                             .context("Convert millis string to u64")?,
                                         seq_num: u64::MIN,
-                                    },
+                                    }
                                 };
                                 let arg = XReadStreamArg {
                                     key: key.clone(),

@@ -194,21 +194,17 @@ impl<T> Trie<T> {
                 data.push((common_chars, v));
             }
 
-            match start_iter.next() {
-                Some(c) => {
-                    char = match node.children[(c as usize)..CHARSET_SIZE]
-                        .iter()
-                        .position(|n| n.is_some())
-                    {
-                        Some(_c) => c + _c as u8,
-                        None => {
-                            break;
-                        }
-                    };
-                }
-                None => {
+            if let Some(c) = start_iter.next() {
+                char = if let Some(_c) = node.children[(c as usize)..CHARSET_SIZE]
+                    .iter()
+                    .position(|n| n.is_some())
+                {
+                    c + _c as u8
+                } else {
                     break;
-                }
+                };
+            } else {
+                break;
             }
 
             has_passed_first_iter = true;
@@ -309,22 +305,18 @@ impl<T> Trie<T> {
                 data.push((common_chars.clone(), v));
             }
 
-            match end_iter.next() {
-                Some(&c) => {
-                    char = match node.children[0..=(c as usize)]
-                        .iter()
-                        .rev()
-                        .position(|n| n.is_some())
-                    {
-                        Some(_c) => c - _c as u8,
-                        None => {
-                            break;
-                        }
-                    };
-                }
-                None => {
+            if let Some(&c) = end_iter.next() {
+                char = if let Some(_c) = node.children[0..=(c as usize)]
+                    .iter()
+                    .rev()
+                    .position(|n| n.is_some())
+                {
+                    c - _c as u8
+                } else {
                     break;
-                }
+                };
+            } else {
+                break;
             }
 
             has_passed_first_iter = true;
@@ -333,42 +325,42 @@ impl<T> Trie<T> {
 
     pub(crate) fn get_range_incl(&self, start: u64, end: u64) -> Vec<(u64, &T)> {
         let (common_node, cpair, common_chars, remaining_start_chars, remaining_end_chars) =
-            match self.traverse_to_common_node(start, end) {
-                Some(args) => args,
-                None => return vec![],
+            if let Some(args) = self.traverse_to_common_node(start, end) {
+                args
+            } else {
+                return vec![];
             };
 
-        match cpair {
-            Some((start_char, end_char)) => {
-                let mut data = Vec::new();
-                self.collect_values_along_path_to_start(
+        if let Some((start_char, end_char)) = cpair {
+            let mut data = Vec::new();
+            self.collect_values_along_path_to_start(
+                common_node,
+                start_char,
+                remaining_start_chars,
+                common_chars,
+                &mut data,
+            );
+            self.collect_values_between_start_and_end(
+                common_node,
+                start_char,
+                end_char,
+                common_chars,
+                &mut data,
+            );
+
+            if end_char > start_char {
+                self.collect_values_along_path_to_end(
                     common_node,
-                    start_char,
-                    remaining_start_chars,
-                    common_chars,
-                    &mut data,
-                );
-                self.collect_values_between_start_and_end(
-                    common_node,
-                    start_char,
                     end_char,
+                    remaining_end_chars,
                     common_chars,
                     &mut data,
                 );
-
-                if end_char > start_char {
-                    self.collect_values_along_path_to_end(
-                        common_node,
-                        end_char,
-                        remaining_end_chars,
-                        common_chars,
-                        &mut data,
-                    );
-                }
-
-                data
             }
-            None => common_node
+
+            data
+        } else {
+            common_node
                 .get_all()
                 .into_iter()
                 .map(|(chars, v)| {
@@ -380,7 +372,7 @@ impl<T> Trie<T> {
                         v,
                     )
                 })
-                .collect(),
+                .collect()
         }
     }
 }

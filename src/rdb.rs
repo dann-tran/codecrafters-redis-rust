@@ -194,16 +194,13 @@ pub fn parse_rdb(bytes: &[u8]) -> anyhow::Result<Rdb> {
 
                     _remaining = __remaining;
 
-                    match since_unix_epoch {
-                        Some(dur) => {
-                            let expiry = UNIX_EPOCH + dur;
-                            if expiry > SystemTime::now() {
-                                expire_table.insert(key, (value, expiry));
-                            }
+                    if let Some(dur) = since_unix_epoch {
+                        let expiry = UNIX_EPOCH + dur;
+                        if expiry > SystemTime::now() {
+                            expire_table.insert(key, (value, expiry));
                         }
-                        None => {
-                            nonexpire_table.insert(key, value);
-                        }
+                    } else {
+                        nonexpire_table.insert(key, value);
                     }
                 }
 

@@ -33,55 +33,52 @@ async fn main() {
     } = Cli::parse();
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
-    match replicaof {
-        Some(v) => {
-            let (master_host, remaining) = v.split_first().expect("Host argument");
-            let (master_port, remaining) = remaining.split_first().expect("Port argument");
-            assert!(remaining.is_empty());
+    if let Some(v) = replicaof {
+        let (master_host, remaining) = v.split_first().expect("Host argument");
+        let (master_port, remaining) = remaining.split_first().expect("Port argument");
+        assert!(remaining.is_empty());
 
-            let master_addr = format!("{}:{}", master_host, master_port);
-            let master_conn = TcpStream::connect(master_addr)
+        let master_addr = format!("{}:{}", master_host, master_port);
+        let master_conn = TcpStream::connect(master_addr)
+            .await
+            .context("Connect to master")
+            .unwrap();
+        let server = ReplicaServer::new(port, master_conn).await.unwrap();
+
+        let listener = TcpListener::bind(&addr)
+            .await
+            .context(format!("Listen at {}", addr))
+            .unwrap();
+
+        loop {
+            let (socket, _) = listener
+                .accept()
                 .await
-                .context("Connect to master")
+                .context("Accept connection")
                 .unwrap();
-            let server = ReplicaServer::new(port, master_conn).await.unwrap();
+            eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
 
-            let listener = TcpListener::bind(&addr)
-                .await
-                .context(format!("Listen at {}", addr))
-                .unwrap();
-
-            loop {
-                let (socket, _) = listener
-                    .accept()
-                    .await
-                    .context("Accept connection")
-                    .unwrap();
-                eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
-
-                let mut server = server.clone();
-                tokio::spawn(async move { server.handle_conn(socket).await });
-            }
+            let mut server = server.clone();
+            tokio::spawn(async move { server.handle_conn(socket).await });
         }
-        None => {
-            let server = MasterServer::new(dir, dbfilename).await;
+    } else {
+        let server = MasterServer::new(dir, dbfilename).await;
 
-            let listener = TcpListener::bind(&addr)
+        let listener = TcpListener::bind(&addr)
+            .await
+            .context(format!("Listen at {}", addr))
+            .unwrap();
+
+        loop {
+            let (socket, _) = listener
+                .accept()
                 .await
-                .context(format!("Listen at {}", addr))
+                .context("Accept connection")
                 .unwrap();
+            eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
 
-            loop {
-                let (socket, _) = listener
-                    .accept()
-                    .await
-                    .context("Accept connection")
-                    .unwrap();
-                eprintln!("Accept conn from {}", socket.peer_addr().unwrap());
-
-                let mut server = server.clone();
-                tokio::spawn(async move { server.handle_conn(socket).await });
-            }
+            let mut server = server.clone();
+            tokio::spawn(async move { server.handle_conn(socket).await });
         }
     }
 }

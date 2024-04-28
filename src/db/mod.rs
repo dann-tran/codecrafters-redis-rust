@@ -175,7 +175,7 @@ impl RedisDb {
     ) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
         self.streams
             .get(key)
-            .map_or_else(|| vec![], |stream| stream.xrange(start, end))
+            .map_or(vec![], |stream| stream.xrange(start, end))
     }
 
     pub(crate) fn xread(
@@ -188,7 +188,7 @@ impl RedisDb {
                     arg.key.clone(),
                     self.streams
                         .get(&arg.key)
-                        .map_or_else(|| vec![], |stream| stream.xread(&arg.start)),
+                        .map_or(vec![], |stream| stream.xread(&arg.start)),
                 );
             })
             .collect()

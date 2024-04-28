@@ -126,10 +126,7 @@ async fn handle_get(socket: &mut TcpStream, store: &RedisStore, key: &Vec<u8>) {
 
     let value = store.get(key).await;
 
-    let res = match value {
-        Some(x) => RespValue::BulkString(x),
-        None => RespValue::NullBulkString,
-    };
+    let res = value.map_or(RespValue::NullBulkString, |x| RespValue::BulkString(x));
     let buf = res.to_bytes();
 
     socket

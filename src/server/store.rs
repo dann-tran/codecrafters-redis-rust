@@ -28,12 +28,13 @@ impl RedisStore {
             .into_iter()
             .map(|(k, v)| (k, Arc::new(Mutex::new(v))))
             .collect::<HashMap<u32, Arc<Mutex<RedisDb>>>>();
-        match &databases.keys().into_iter().min() {
-            Some(&k) => Self {
+        if let Some(&k) = &databases.keys().into_iter().min() {
+            Self {
                 databases,
                 cur_db_num: k,
-            },
-            None => Self::new(),
+            }
+        } else {
+            Self::new()
         }
     }
 
