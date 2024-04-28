@@ -128,25 +128,17 @@ impl<T> Trie<T> {
         // find first u4 char that differs in start and end
         while let Some((start_char, end_char)) = cpair_iter.next() {
             // shift start_char to the first non-empty node
-            let start_char = match node.children[(start_char as usize)..=(end_char as usize)]
+            let start_char = node.children[(start_char as usize)..=(end_char as usize)]
                 .iter()
                 .position(|n| n.is_some())
-            {
-                Some(c) => start_char + c as u8,
-                None => {
-                    return None;
-                }
-            };
+                .map(|c| start_char + c as u8)?;
 
             // shift end_char to the first non-empty node
-            let end_char = match node.children[(start_char as usize)..=(end_char as usize)]
+            let end_char = node.children[(start_char as usize)..=(end_char as usize)]
                 .iter()
                 .rev()
                 .position(|n| n.is_some())
-            {
-                Some(c) => end_char - c as u8,
-                None => return None,
-            };
+                .map(|c| end_char - c as u8)?;
 
             if start_char != end_char {
                 cpair = Some((start_char, end_char));

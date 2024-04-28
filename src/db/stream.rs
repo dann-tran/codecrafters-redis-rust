@@ -34,62 +34,56 @@ fn make_stream_entry_id(
     req: Option<ReqStreamEntryID>,
     last_entry: &StreamEntryID,
 ) -> anyhow::Result<StreamEntryID> {
-    match req {
-        Some(req) => {
-            if req.millis == 0 {
-                if let Some(seq_num) = &req.seq_num {
-                    if *seq_num == 0 {
-                        return Err(anyhow::anyhow!(
-                            "ERR The ID specified in XADD must be greater than 0-0"
-                        ));
-                    }
-                }
-            }
-
-            let seq_num = match req.millis.cmp(&last_entry.millis) {
-                Ordering::Less => {
+    if let Some(req) = req {
+        if req.millis == 0 {
+            if let Some(seq_num) = &req.seq_num {
+                if *seq_num == 0 {
                     return Err(anyhow::anyhow!(
-                        "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                        "ERR The ID specified in XADD must be greater than 0-0"
                     ));
                 }
-                Ordering::Equal => match req.seq_num {
-                    Some(seq_num) => match seq_num.cmp(&last_entry.seq_num) {
-                        Ordering::Greater => seq_num,
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                    "ERR The ID specified in XADD is equal or smaller than the target stream top item"
-                                ));
-                        }
-                    },
-                    None => last_entry.seq_num + 1,
-                },
-                Ordering::Greater => match req.seq_num {
-                    Some(seq_num) => seq_num,
-                    None => 0,
-                },
-            };
-
-            Ok(StreamEntryID {
-                millis: req.millis,
-                seq_num,
-            })
-        }
-        None => {
-            if last_entry.millis == 0 && last_entry.seq_num == 0 {
-                Ok(StreamEntryID {
-                    millis: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_millis() as u64,
-                    seq_num: 0,
-                })
-            } else {
-                Ok(StreamEntryID {
-                    millis: last_entry.millis,
-                    seq_num: last_entry.seq_num + 1,
-                })
             }
         }
+
+        let seq_num = match req.millis.cmp(&last_entry.millis) {
+            Ordering::Less => {
+                return Err(anyhow::anyhow!(
+                        "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                    ));
+            }
+            Ordering::Equal => {
+                if let Some(seq_num) = req.seq_num {
+                    if seq_num.cmp(&last_entry.seq_num) == Ordering::Greater {
+                        seq_num
+                    } else {
+                        return Err(anyhow::anyhow!(
+                                    "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                                ));
+                    }
+                } else {
+                    last_entry.seq_num + 1
+                }
+            }
+            Ordering::Greater => req.seq_num.unwrap_or(0),
+        };
+
+        Ok(StreamEntryID {
+            millis: req.millis,
+            seq_num,
+        })
+    } else if last_entry.millis == 0 && last_entry.seq_num == 0 {
+        Ok(StreamEntryID {
+            millis: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_millis() as u64,
+            seq_num: 0,
+        })
+    } else {
+        Ok(StreamEntryID {
+            millis: last_entry.millis,
+            seq_num: last_entry.seq_num + 1,
+        })
     }
 }
 
