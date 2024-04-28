@@ -28,7 +28,7 @@ pub(crate) enum ConfigArg {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct XReadStreamArg {
     pub(crate) key: Vec<u8>,
-    pub(crate) start: StreamEntryID,
+    pub(crate) start: Option<StreamEntryID>,
 }
 
 // TODO: remove Clone trait
@@ -157,7 +157,10 @@ impl Command {
                     vec.push(arg.key.clone());
                 });
                 streams.iter().for_each(|arg| {
-                    vec.push(arg.start.as_bytes());
+                    vec.push(match &arg.start {
+                        Some(entry_id) => entry_id.as_bytes(),
+                        None => b"$".to_vec(),
+                    });
                 });
 
                 vec
@@ -546,11 +549,12 @@ impl Command {
 
                             let mut args = Vec::with_capacity(keys.len());
                             for (key, start) in keys.into_iter().zip(starts.into_iter()) {
-                                let start = if let Some(idx) = start.iter().position(|&c| c == b'-')
-                                {
+                                let start = if start == b"$" {
+                                    None
+                                } else if let Some(idx) = start.iter().position(|&c| c == b'-') {
                                     let (millis, seq_num) = start.split_at(idx);
                                     let seq_num = &seq_num[1..];
-                                    StreamEntryID {
+                                    Some(StreamEntryID {
                                         millis: std::str::from_utf8(millis)
                                             .context("UTF-8 decode millis")?
                                             .parse()
@@ -559,15 +563,15 @@ impl Command {
                                             .context("UTF-8 decode seq_num")?
                                             .parse()
                                             .context("Convert seq_num string to u64")?,
-                                    }
+                                    })
                                 } else {
-                                    StreamEntryID {
+                                    Some(StreamEntryID {
                                         millis: std::str::from_utf8(start)
                                             .context("UTF-8 decode millis")?
                                             .parse()
                                             .context("Convert millis string to u64")?,
                                         seq_num: u64::MIN,
-                                    }
+                                    })
                                 };
                                 let arg = XReadStreamArg {
                                     key: key.clone(),
@@ -615,10 +619,10 @@ mod tests {
             block: None,
             streams: vec![XReadStreamArg {
                 key: b"apple".to_vec(),
-                start: StreamEntryID {
+                start: Some(StreamEntryID {
                     millis: 0,
                     seq_num: 0,
-                },
+                }),
             }],
         };
         let bytes = command.to_bytes();
@@ -639,17 +643,17 @@ mod tests {
             streams: vec![
                 XReadStreamArg {
                     key: b"apple".to_vec(),
-                    start: StreamEntryID {
+                    start: Some(StreamEntryID {
                         millis: 0,
                         seq_num: 0,
-                    },
+                    }),
                 },
                 XReadStreamArg {
                     key: b"orange".to_vec(),
-                    start: StreamEntryID {
+                    start: Some(StreamEntryID {
                         millis: 0,
                         seq_num: 1,
-                    },
+                    }),
                 },
             ],
         };

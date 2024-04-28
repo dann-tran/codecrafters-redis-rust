@@ -240,10 +240,10 @@ mod tests {
         let db = get_sample_db();
         let args = &vec![XReadStreamArg {
             key: b"apple".to_vec(),
-            start: StreamEntryID {
+            start: Some(StreamEntryID {
                 millis: 0,
                 seq_num: 1,
-            },
+            }),
         }];
         let expected = vec![(
             b"apple".to_vec(),
@@ -267,17 +267,17 @@ mod tests {
         let args = &vec![
             XReadStreamArg {
                 key: b"apple".to_vec(),
-                start: StreamEntryID {
+                start: Some(StreamEntryID {
                     millis: 0,
                     seq_num: 1,
-                },
+                }),
             },
             XReadStreamArg {
                 key: b"orange".to_vec(),
-                start: StreamEntryID {
+                start: Some(StreamEntryID {
                     millis: 0,
                     seq_num: 3,
-                },
+                }),
             },
         ];
         let expected = vec![

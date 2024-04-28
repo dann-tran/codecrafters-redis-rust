@@ -161,18 +161,22 @@ impl RedisStream {
             .collect()
     }
 
-    pub(crate) fn xread(&self, start: &StreamEntryID) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
-        let (millis, seq_num) = if start.seq_num == u64::MAX {
-            (start.millis + 1, 0)
+    pub(crate) fn xread(&self, start: &Option<StreamEntryID>) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        if let Some(start) = start {
+            let (millis, seq_num) = if start.seq_num == u64::MAX {
+                (start.millis + 1, 0)
+            } else {
+                (start.millis, start.seq_num + 1)
+            };
+            let start = StreamEntryID { millis, seq_num };
+            let end = StreamEntryID {
+                millis: u64::MAX,
+                seq_num: u64::MAX,
+            };
+            self.xrange(start, end)
         } else {
-            (start.millis, start.seq_num + 1)
-        };
-        let start = StreamEntryID { millis, seq_num };
-        let end = StreamEntryID {
-            millis: u64::MAX,
-            seq_num: u64::MAX,
-        };
-        self.xrange(start, end)
+            vec![]
+        }
     }
 }
 
