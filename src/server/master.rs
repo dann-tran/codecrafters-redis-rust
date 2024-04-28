@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -298,7 +298,12 @@ impl RedisServerHandler for MasterServer {
                                 }
                                 join_set.join_next().await.expect("Join set is not empty")
                             };
-                            if let Ok(res) = time::timeout(dur, block_read).await {
+                            let res = if dur == Duration::ZERO {
+                                Some(block_read.await)
+                            } else {
+                                time::timeout(dur, block_read).await.ok()
+                            };
+                            if let Some(res) = res {
                                 let (key, (entry_id, kvs)) = res.unwrap();
                                 let (_, serialized_data) =
                                     data.iter_mut().find(|(k, _)| **k == key).unwrap();
